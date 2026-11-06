@@ -43,8 +43,11 @@ The integration test runs that binary with temporary SQLite storage, a local
 admin socket, two simulated upstream IRC networks, and a local client connection.
 It does not use an existing bouncer account or contact public IRC networks.
 It covers authentication, capability negotiation, multiplex attachment,
-multiline traffic, history, unread/mention snapshots, read markers, metadata,
+multiline traffic, history, search, unread/mention snapshots, read markers, metadata,
 and detaching one network while keeping the connection alive.
+
+The compatibility work was validated with the prebuilt **v0.99.24** Linux
+x86-64 GNU release. For race detection, add `-race` to the test command.
 
 Without `SOJU_RS_BINARY`, the integration test is skipped; protocol and UI unit
 tests still run with `go test ./...`.

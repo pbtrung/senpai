@@ -3,7 +3,7 @@ packages:
     - go
     - scdoc
 sources:
-    - https://git.sr.ht/~delthas/senpai
+    - https://github.com/pbtrung/senpai
 artifacts:
     - senpai/senpai.exe
 tasks:

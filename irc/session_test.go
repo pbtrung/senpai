@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func testSession(t *testing.T) (*Session, chan Message) {
@@ -183,5 +184,66 @@ func TestVirtualDeferredCapabilities(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("virtual session never requested parent's pending capability")
+	}
+}
+
+func TestFeatureRemovalAndValidation(t *testing.T) {
+	s, _ := testSession(t)
+	s.updateFeatures([]string{"MONITOR=100", "WHOX", "LINELEN=4096", "SOJU.IM/FILEHOST=https://upload.example", "STATUSMSG=@", "CHATHISTORY=500"})
+	s.updateFeatures([]string{"-MONITOR", "-WHOX", "-LINELEN", "-SOJU.IM/FILEHOST", "-STATUSMSG", "-CHATHISTORY"})
+	if s.monitor || s.whox || s.linelen != 512 || s.upload != "" || s.statusmsg != "" || s.historyLimit != 100 {
+		t.Fatal("removed ISUPPORT features retained")
+	}
+	s.updateFeatures([]string{"LINELEN=-1", "CHATHISTORY=-100", "PREFIX=oops"})
+	if s.linelen != 512 || s.historyLimit != 100 || s.prefixModes != "ov" {
+		t.Fatal("invalid ISUPPORT value accepted")
+	}
+	s.updateFeatures([]string{"PREFIX=(qaohv)~&@%+"})
+	if s.prefixModes != "qaohv" || s.prefixSymbols != "~&@%+" {
+		t.Fatal("valid extended membership prefixes rejected")
+	}
+	s.updateFeatures([]string{"MONITOR"})
+	if !s.monitor {
+		t.Fatal("unlimited MONITOR unsupported")
+	}
+}
+
+func TestOversizedGraphemeChunks(t *testing.T) {
+	text := "a" + strings.Repeat("\u0301", 1000) + "z"
+	chunks := splitChunks(text, 100)
+	for _, chunk := range chunks {
+		if len(chunk) > 100 || chunk == "" || !utf8.ValidString(chunk) {
+			t.Fatalf("invalid chunk: %q", chunk)
+		}
+	}
+	if strings.Join(chunks, "") != text {
+		t.Fatal("grapheme fallback lost content")
+	}
+}
+
+func TestFailedHistoryCanRetry(t *testing.T) {
+	s, out := testSession(t)
+	s.enabledCaps["draft/chathistory"] = struct{}{}
+	s.NewHistoryRequest("#c").Latest()
+	handleLine(t, s, ":server FAIL CHATHISTORY TEMPORARILY_UNAVAILABLE LATEST #c :Try later")
+	s.NewHistoryRequest("#c").Latest()
+	if len(out) != 2 {
+		t.Fatal("failed request permanently blocked history")
+	}
+}
+
+func TestVirtualRawMessageTags(t *testing.T) {
+	s, out := testSession(t)
+	s.enabledCaps["soju.im/multiplex"] = struct{}{}
+	v := s.NewVirtualSession("1")
+	t.Cleanup(v.Close)
+	for len(out) > 0 {
+		<-out
+	}
+	v.SendRaw("@+draft/reply=message-id PRIVMSG #c :reply")
+	m := <-out
+	parsed, err := ParseMessage(m.String())
+	if err != nil || parsed.Command != "PRIVMSG" || parsed.Tags[NetworkTag] != "1" || parsed.Tags["+draft/reply"] != "message-id" {
+		t.Fatalf("raw tags lost during multiplex routing: %#v (%v)", parsed, err)
 	}
 }

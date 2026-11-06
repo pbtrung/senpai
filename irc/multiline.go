@@ -145,6 +145,10 @@ func (s *Session) sendText(command, target, text string, lineLen int) {
 			fragments = fragments[1:]
 			continue
 		}
+		if bytes == 0 {
+			fragments = fragments[n:]
+			continue
+		}
 		s.multilineID++
 		id := "senpai" + strconv.FormatUint(s.multilineID, 10)
 		s.send(NewMessage("BATCH", "+"+id, "draft/multiline", target))

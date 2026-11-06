@@ -48,3 +48,24 @@ func TestMultilineLayout(t *testing.T) {
 		}
 	}
 }
+
+func TestHistoryDoesNotDoubleCountHighlights(t *testing.T) {
+	stamp := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
+	bs := BufferList{ui: &UI{}, list: []buffer{{title: "home"}, {netID: "1", title: "#c", read: stamp}}, focused: true}
+	bs.SetUnread("1", "#c", stamp.Add(2*time.Second), true, true)
+	bs.AddLines("1", "#c", []Line{
+		{At: stamp.Add(time.Second), Body: PlainString("one"), Notify: NotifyHighlight, Readable: true},
+		{At: stamp.Add(2 * time.Second), Body: PlainString("two"), Notify: NotifyHighlight, Readable: true},
+	}, nil)
+	if got := bs.list[1].highlights; got != 2 {
+		t.Fatalf("snapshot double counted: %d", got)
+	}
+	bs.AddLines("1", "#c", []Line{{At: stamp.Add(-time.Second), Body: PlainString("older"), Readable: true}}, nil)
+	if got := bs.list[1].highlights; got != 2 {
+		t.Fatalf("history reload double counted: %d", got)
+	}
+	bs.SetRead("1", "#c", stamp.Add(time.Second))
+	if got := bs.list[1].highlights; got != 1 {
+		t.Fatalf("partial read retained old highlights: %d", got)
+	}
+}

@@ -215,15 +215,16 @@ func (l *Line) NewLines(vx *Vaxis, width int) []int {
 }
 
 type buffer struct {
-	netID         string
-	netName       string
-	title         string
-	highlights    int
-	notifications []int
-	unread        bool
-	unreadLatest  time.Time // latest unread message from a server target snapshot
-	read          time.Time
-	openedOnce    bool
+	netID           string
+	netName         string
+	title           string
+	highlights      int
+	notifications   []int
+	unread          bool
+	unreadLatest    time.Time // latest unread message from a server target snapshot
+	snapshotMention bool
+	read            time.Time
+	openedOnce      bool
 
 	pinned bool
 	muted  bool
@@ -560,7 +561,6 @@ func (bs *BufferList) AddLines(netID, title string, before, after []Line) {
 	if b == nil {
 		return
 	}
-	updateRead := (!bs.focused || b != bs.cur()) && !b.read.IsZero()
 
 	lines := make([]Line, 0, len(before)+len(b.lines)+len(after))
 	for _, buf := range []*[]Line{&before, &b.lines, &after} {
@@ -579,18 +579,12 @@ func (bs *BufferList) AddLines(netID, title string, before, after []Line) {
 				}
 				lines = append(lines, line)
 			}
-
-			if updateRead && line.At.After(b.read) {
-				if line.Notify != NotifyNone {
-					b.unread = true
-				}
-				if line.Notify == NotifyHighlight {
-					b.highlights++
-				}
-			}
 		}
 	}
 	b.lines = lines
+	if (!bs.focused || b != bs.cur()) && !b.read.IsZero() {
+		bs.recountUnread(b)
+	}
 	if b == bs.cur() && b.unreadSkip == optionalUnset && len(b.lines) > 0 {
 		if b.unreadRuler.IsZero() || !b.lines[len(b.lines)-1].At.After(b.unreadRuler) {
 			b.unreadSkip = optionalTrue
@@ -662,6 +656,7 @@ func (bs *BufferList) clearRead(i int) {
 	b.highlights = 0
 	b.unread = false
 	b.unreadLatest = time.Time{}
+	b.snapshotMention = false
 	if len(b.notifications) > 0 {
 		for _, id := range b.notifications {
 			notifyClose(id)
@@ -678,6 +673,7 @@ func (bs *BufferList) SetUnread(netID, title string, latest time.Time, unread, m
 	}
 	if unread {
 		b.unreadLatest = latest
+		b.snapshotMention = mention
 		if !bs.focused || b != bs.cur() {
 			b.unread = true
 			if mention && b.highlights == 0 {
@@ -687,31 +683,50 @@ func (bs *BufferList) SetUnread(netID, title string, latest time.Time, unread, m
 	}
 }
 
-func (bs *BufferList) SetRead(netID, title string, timestamp time.Time) {
-	i, b := bs.at(netID, title)
-	if b == nil || i < 0 {
-		return
-	}
-	clearRead := !b.unreadLatest.After(timestamp)
+// recountUnread replaces a snapshot's placeholder count with the loaded unread
+// messages. Re-reading history must not count the same highlight again.
+func (bs *BufferList) recountUnread(b *buffer) {
+	b.unread = b.unreadLatest.After(b.read)
+	b.highlights = 0
 	for i := len(b.lines) - 1; i >= 0; i-- {
 		line := &b.lines[i]
-		if !line.At.After(timestamp) {
+		if !line.At.After(b.read) {
 			break
 		}
-		if line.Readable && line.Notify != NotifyNone {
-			clearRead = false
-			break
+		if line.Readable {
+			if line.Notify != NotifyNone {
+				b.unread = true
+			}
+			if line.Notify == NotifyHighlight {
+				b.highlights++
+			}
 		}
 	}
-	if clearRead {
+	if b.snapshotMention && b.unreadLatest.After(b.read) && b.highlights == 0 {
+		b.highlights = 1
+	}
+}
+
+func (bs *BufferList) SetRead(netID, title string, timestamp time.Time) {
+	i, b := bs.at(netID, title)
+	if b == nil || i < 0 || timestamp.Before(b.read) {
+		return
+	}
+	b.read = timestamp
+	if !b.unreadLatest.After(timestamp) {
+		b.unreadLatest = time.Time{}
+		b.snapshotMention = false
+	}
+	if bs.focused && b == bs.cur() {
 		bs.clearRead(i)
-	}
-	if b.read.Before(timestamp) {
-		b.read = timestamp
-		// For buffers that were focused _before_ we receive any "last read" date.
-		if b.unreadRuler.IsZero() {
-			b.unreadRuler = b.read
+	} else {
+		bs.recountUnread(b)
+		if !b.unread {
+			bs.clearRead(i)
 		}
+	}
+	if b.unreadRuler.IsZero() {
+		b.unreadRuler = b.read
 	}
 }
 

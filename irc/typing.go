@@ -15,45 +15,55 @@ type Typing struct {
 
 // Typings keeps track of typing notification timeouts.
 type Typings struct {
-	l        sync.Mutex
-	closed   bool                 // whether Close has been called
-	targets  map[Typing]time.Time // @+typing TAGMSG timestamps.
-	timeouts chan Typing          // transmits unfiltered timeout notifications.
-	stops    chan Typing          // transmits filtered timeout notifications.
+	l       sync.Mutex
+	closed  bool
+	targets map[Typing]time.Time
+	stops   chan Typing
+	done    chan struct{}
 }
 
-// NewTypings initializes the Typings structures and filtering coroutine.
+// NewTypings uses one expiry loop per session instead of one sleeping goroutine
+// per notification. Only that loop closes stops, so shutdown cannot race a send.
 func NewTypings() *Typings {
-	ts := &Typings{
-		targets:  map[Typing]time.Time{},
-		timeouts: make(chan Typing, 16),
-		stops:    make(chan Typing, 16),
-	}
+	ts := &Typings{targets: make(map[Typing]time.Time), stops: make(chan Typing, 16), done: make(chan struct{})}
 	go func() {
-		for t := range ts.timeouts {
-			now := time.Now()
-			ts.l.Lock()
-			oldT, ok := ts.targets[t]
-			if ok && 6.0 < now.Sub(oldT).Seconds() {
-				delete(ts.targets, t)
+		defer close(ts.stops)
+		tick := time.NewTicker(time.Second)
+		defer tick.Stop()
+		for {
+			select {
+			case now := <-tick.C:
+				ts.l.Lock()
+				var expired []Typing
+				for target, stamp := range ts.targets {
+					if now.Sub(stamp) >= 6*time.Second {
+						delete(ts.targets, target)
+						expired = append(expired, target)
+					}
+				}
 				ts.l.Unlock()
-				ts.stops <- t
-			} else {
-				ts.l.Unlock()
+				for _, target := range expired {
+					select {
+					case ts.stops <- target:
+					case <-ts.done:
+						return
+					}
+				}
+			case <-ts.done:
+				return
 			}
 		}
 	}()
 	return ts
 }
 
-// Close cleanly closes all channels and stops all goroutines.
 func (ts *Typings) Close() {
 	ts.l.Lock()
 	defer ts.l.Unlock()
-
-	close(ts.timeouts)
-	close(ts.stops)
-	ts.closed = true
+	if !ts.closed {
+		ts.closed = true
+		close(ts.done)
+	}
 }
 
 // Stops is a channel that transmits typing timeouts.
@@ -64,21 +74,10 @@ func (ts *Typings) Stops() <-chan Typing {
 // Active should be called when a user is typing to some target.
 func (ts *Typings) Active(target, name string) {
 	ts.l.Lock()
-	t := Typing{target, name}
-	ts.targets[t] = time.Now()
-	ts.l.Unlock()
-
-	go func() {
-		time.Sleep(6 * time.Second)
-
-		ts.l.Lock()
-		closed := ts.closed
-		ts.l.Unlock()
-
-		if !closed {
-			ts.timeouts <- t
-		}
-	}()
+	defer ts.l.Unlock()
+	if !ts.closed {
+		ts.targets[Typing{target, name}] = time.Now()
+	}
 }
 
 // Done should be called when a user is done typing to some target.

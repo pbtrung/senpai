@@ -37,7 +37,14 @@ extensions, such as:
 - _BOUNCER_, senpai connects to all your networks at once automatically,
 - _SEARCH_, senpai can search messages quickly server-side,
 - _FILEHOST_, senpai can upload files to the bouncer,
-- and more to come!
+- _draft/multiline_, senpai preserves line breaks in pasted chat and history,
+- _soju.im/multiplex_, senpai connects to multiple bouncer networks over one connection,
+- _soju.im/unread_, senpai shows unread conversations and mentions without downloading every conversation's history.
+
+These features are negotiated automatically and require server support.
+When using soju-rs, connect with your bouncer username without a network suffix
+to discover and attach all your networks. Servers without multiplex support
+use separate connections per network.
 
 # CONFIGURATION
 

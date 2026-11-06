@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"go.rockorager.dev/vaxis"
 	"golang.org/x/time/rate"
@@ -427,7 +428,11 @@ func (s *Session) Topic(channel string) (topic string, who *Prefix, at time.Time
 }
 
 func (s *Session) SendRaw(raw string) {
-	s.send(NewMessage(raw))
+	msg, err := ParseMessage(raw)
+	if err != nil {
+		return
+	}
+	s.send(msg)
 }
 
 func (s *Session) Send(command string, params ...string) {
@@ -520,6 +525,30 @@ func splitChunks(s string, chunkLen int) (chunks []string) {
 			break
 		}
 		cw := len(c.Grapheme)
+		if cw > chunkLen {
+			if n > 0 {
+				chunks = append(chunks, s[b:b+n])
+				b += n
+				n = 0
+			}
+			// A single grapheme can contain arbitrarily many combining marks.
+			// Fall back to code point boundaries so it cannot exceed IRC LINELEN.
+			for cw > 0 {
+				size := min(chunkLen, cw)
+				if size < cw {
+					for size > 0 && !utf8.RuneStart(s[b+size]) {
+						size--
+					}
+				}
+				if size == 0 {
+					_, size = utf8.DecodeRuneInString(s[b:])
+				}
+				chunks = append(chunks, s[b:b+size])
+				b += size
+				cw -= size
+			}
+			continue
+		}
 		if n+cw > chunkLen {
 			chunks = append(chunks, s[b:b+n])
 			b += n
@@ -1648,6 +1677,13 @@ func (s *Session) handleMessageRegistered(msg Message, playback bool) (Event, er
 	case "ERROR":
 		s.Close()
 	case "FAIL", "WARN", "NOTE":
+		if msg.Command == "FAIL" && len(msg.Params) > 2 && msg.Params[0] == "CHATHISTORY" {
+			if msg.Params[2] == "TARGETS" {
+				delete(s.chReqs, "")
+			} else if len(msg.Params) > 3 {
+				delete(s.chReqs, s.Casemap(msg.Params[3]))
+			}
+		}
 		var severity Severity
 		var code string
 		if err := msg.ParseParams(nil, &code); err != nil {
@@ -2251,7 +2287,32 @@ func (s *Session) updateFeatures(features []string) {
 		}
 
 		if !add {
-			// TODO support ISUPPORT negations
+			switch key {
+			case "CLIENTTAGDENY":
+				clear(s.clientTagList)
+				s.clientTagListIsAllow = false
+			case "CHANMODES":
+				s.chanmodes = [4]string{}
+			case "CHANTYPES":
+				s.chantypes = "#&"
+			case "CHATHISTORY":
+				s.historyLimit = 100
+			case "ELIST":
+				s.listMask = false
+			case "LINELEN":
+				s.linelen = 512
+			case "MONITOR":
+				s.monitor = false
+			case "PREFIX":
+				s.prefixModes = "ov"
+				s.prefixSymbols = "@+"
+			case "STATUSMSG":
+				s.statusmsg = ""
+			case "WHOX":
+				s.whox = false
+			case "SOJU.IM/FILEHOST":
+				s.upload = ""
+			}
 			continue
 		}
 
@@ -2293,6 +2354,7 @@ func (s *Session) updateFeatures(features []string) {
 				s.clientTagList[tag] = struct{}{}
 			}
 		case "CHANMODES":
+			s.chanmodes = [4]string{}
 			// We only care about the first four params
 			types := strings.SplitN(value, ",", 5)
 			for i := 0; i < len(types) && i < len(s.chanmodes); i++ {
@@ -2302,28 +2364,26 @@ func (s *Session) updateFeatures(features []string) {
 			s.chantypes = value
 		case "CHATHISTORY":
 			historyLimit, err := strconv.Atoi(value)
-			if err == nil {
+			if err == nil && historyLimit > 0 {
 				s.historyLimit = historyLimit
 			}
 		case "ELIST":
 			s.listMask = strings.Contains(strings.ToUpper(value), "M")
 		case "LINELEN":
 			linelen, err := strconv.Atoi(value)
-			if err == nil && linelen != 0 {
+			if err == nil && linelen >= 512 && linelen <= 65536 {
 				s.linelen = linelen
 			}
 		case "MONITOR":
 			monitor, err := strconv.Atoi(value)
-			if err == nil && monitor > 0 {
-				s.monitor = true
-			}
+			s.monitor = value == "" || (err == nil && monitor > 0)
 		case "PREFIX":
 			if value == "" {
 				s.prefixModes = ""
 				s.prefixSymbols = ""
 				break Switch
 			}
-			if len(value)%2 != 0 {
+			if !strings.HasPrefix(value, "(") || len(value)%2 != 0 || len(value) < 2 || value[len(value)/2] != ')' {
 				break Switch
 			}
 			for i := 0; i < len(value); i++ {
