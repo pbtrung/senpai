@@ -5,6 +5,10 @@ chat history and message search, automatic connections to multiple networks,
 typing indicators, and file uploads with drag and drop. These features require
 support from your server or bouncer; senpai does not keep local chat logs.
 
+With [soju-rs](https://github.com/pbtrung/soju-rs), senpai supports unread and
+mention indicators, multiple networks over one connection, and multiline
+messages. See the [compatibility notes](doc/soju-rs.md) for details.
+
 ## Installation
 
 To build from source, install Go 1.21 or later, Make, and

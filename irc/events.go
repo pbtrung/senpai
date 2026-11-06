@@ -107,8 +107,14 @@ type HistoryEvent struct {
 	End      bool
 }
 
+type TargetUnread struct {
+	Unread  bool
+	Mention bool
+}
+
 type HistoryTargetsEvent struct {
 	Targets map[string]time.Time
+	Unread  map[string]TargetUnread
 }
 
 type ReadEvent struct {

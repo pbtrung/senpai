@@ -489,7 +489,7 @@ func (app *App) ircLoop(netID string) {
 				})
 			}
 			app.postEvent(event{
-				src:     netID,
+				src:     messageNetwork(netID, msg),
 				content: msg,
 			})
 		}
@@ -1026,7 +1026,11 @@ func (app *App) handleAction(action string, args ...string) {
 			netID, buffer := app.win.CurrentBuffer()
 			input := string(app.win.InputContent())
 			var err error
-			for _, part := range strings.Split(input, "\n") {
+			parts := strings.Split(input, "\n")
+			if session := app.sessions[netID]; session != nil && session.HasCapability("draft/multiline") && buffer != "" && !isCommand([]rune(input)) {
+				parts = []string{input}
+			}
+			for _, part := range parts {
 				if err = app.handleInput(buffer, part); err != nil {
 					app.win.AddLine(netID, buffer, ui.Line{
 						At:     time.Now(),
@@ -1487,8 +1491,40 @@ func (app *App) maybeRequestHistory() {
 	}
 }
 
+func messageNetwork(netID string, msg irc.Message) string {
+	if netID == "" && msg.Tags[irc.NetworkTag] != "" {
+		return msg.Tags[irc.NetworkTag]
+	}
+	return netID
+}
+
+func (app *App) startNetwork(id string) {
+	if root := app.sessions[""]; root != nil && root.HasCapability("soju.im/multiplex") {
+		if session := root.NewVirtualSession(id); session != nil {
+			app.handleIRCEvent(id, session)
+			go app.forwardTyping(id, session)
+		}
+		return
+	}
+	go app.ircLoop(id)
+}
+
+func (app *App) forwardTyping(id string, session *irc.Session) {
+	for stop := range session.TypingStops() {
+		app.postEvent(event{src: id, content: stop})
+	}
+}
+
 func (app *App) handleIRCEvent(netID string, ev interface{}) {
 	if ev == nil {
+		if netID == "" {
+			for id, child := range app.sessions {
+				if child.IsVirtual() {
+					child.Close()
+					delete(app.sessions, id)
+				}
+			}
+		}
 		if s, ok := app.sessions[netID]; ok {
 			s.Close()
 			delete(app.sessions, netID)
@@ -1522,7 +1558,14 @@ func (app *App) handleIRCEvent(netID string, ev interface{}) {
 	}
 	s, ok := app.sessions[netID]
 	if !ok {
-		panic(fmt.Sprintf("cannot find session %q for message %q", netID, msg.String()))
+		// Late messages may arrive after a network was detached or deleted.
+		return
+	}
+
+	if msg.Command == "ERROR" && s.IsVirtual() {
+		app.addStatusLine(netID, ui.Line{At: msg.TimeOrNow(), Head: ui.ColorString("!!", ui.ColorRed), Body: ui.PlainString(strings.Join(msg.Params, " "))})
+		app.handleIRCEvent(netID, nil)
+		return
 	}
 
 	// Mutate IRC state
@@ -1571,9 +1614,11 @@ func (app *App) handleIRCEvent(netID string, ev interface{}) {
 			// TODO: support autojoining channels with keys
 			s.Join(channel, "")
 		}
-		s.NewHistoryRequest("").
-			WithLimit(1000).
-			Targets(app.lastCloseTime, msg.TimeOrNow())
+		if s.HasCapability("soju.im/unread") {
+			s.NewHistoryRequest("").WithLimit(1000).Targets(msg.TimeOrNow(), time.Unix(0, 0))
+		} else {
+			s.NewHistoryRequest("").WithLimit(1000).Targets(app.lastCloseTime, msg.TimeOrNow())
+		}
 		body := "Connected to the server"
 		if s.Nick() != app.cfg.Nick {
 			body = fmt.Sprintf("Connected to the server as %s", s.Nick())
@@ -1671,7 +1716,9 @@ func (app *App) handleIRCEvent(netID string, ev interface{}) {
 		}
 		bk := boundKey{netID, s.Casemap(ev.Channel)}
 		bounds, ok := app.messageBounds[bk]
-		if added || !ok {
+		if s.HasCapability("soju.im/unread") {
+			// The target snapshot supplies unread state; load history on opening.
+		} else if added || !ok {
 			if t, ok := msg.Time(); ok {
 				s.NewHistoryRequest(ev.Channel).
 					WithLimit(500).
@@ -1789,6 +1836,16 @@ func (app *App) handleIRCEvent(netID string, ev interface{}) {
 		bounds.Update(&line)
 		app.messageBounds[bk] = bounds
 	case irc.HistoryTargetsEvent:
+		if s.HasCapability("soju.im/unread") {
+			for target, last := range ev.Targets {
+				if !s.IsChannel(target) {
+					app.addUserBuffer(netID, target, time.Time{})
+				}
+				state := ev.Unread[target]
+				app.win.SetUnread(netID, target, last, state.Unread, state.Mention)
+			}
+			break
+		}
 		type target struct {
 			name string
 			last time.Time
@@ -1896,8 +1953,8 @@ func (app *App) handleIRCEvent(netID string, ev interface{}) {
 			}
 			app.networkLock.Unlock()
 			_, added := app.win.AddBuffer(ev.ID, ev.Attrs["name"], "")
-			if added {
-				go app.ircLoop(ev.ID)
+			if added || (s.HasCapability("soju.im/multiplex") && app.sessions[ev.ID] == nil) {
+				app.startNetwork(ev.ID)
 			}
 		} else {
 			app.networkLock.Lock()
@@ -1906,6 +1963,9 @@ func (app *App) handleIRCEvent(netID string, ev interface{}) {
 			// if a session was already opened, close it now.
 			// otherwise, we'll close it when it sends a new session event.
 			if s, ok := app.sessions[ev.ID]; ok {
+				if s.IsVirtual() {
+					app.sessions[""].Detach(ev.ID)
+				}
 				s.Close()
 				delete(app.sessions, ev.ID)
 				delete(app.monitor, ev.ID)
@@ -1924,8 +1984,8 @@ func (app *App) handleIRCEvent(netID string, ev interface{}) {
 			}
 			app.networkLock.Unlock()
 			_, added := app.win.AddBuffer(ev.ID, ev.Attrs["name"], "")
-			if added {
-				go app.ircLoop(ev.ID)
+			if added || (s.HasCapability("soju.im/multiplex") && app.sessions[ev.ID] == nil) {
+				app.startNetwork(ev.ID)
 			}
 		}
 
@@ -2647,6 +2707,9 @@ func (app *App) addUserBuffer(netID, buffer string, t time.Time) (i int, added b
 	app.monitor[netID][buffer] = struct{}{}
 	s.MonitorAdd(buffer)
 	s.ReadGet(buffer)
+	if s.HasCapability("soju.im/unread") {
+		return
+	}
 	if !t.IsZero() {
 		s.NewHistoryRequest(buffer).
 			WithLimit(500).

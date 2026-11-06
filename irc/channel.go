@@ -49,7 +49,7 @@ func ChanInOut(conn net.Conn) (in <-chan Message, out chan<- Message) {
 		t := time.NewTicker(time.Second)
 		defer t.Stop()
 		labelOff := 1
-		labeledResponse := false
+		labeledResponse := make(map[string]bool)
 	outer:
 		for {
 			select {
@@ -57,15 +57,17 @@ func ChanInOut(conn net.Conn) (in <-chan Message, out chan<- Message) {
 				if !ok {
 					break outer
 				}
+				network := msg.Tags[NetworkTag]
 				if msg.Command == labelEnableCommand {
-					labeledResponse = true
+					labeledResponse[network] = true
 					continue
 				}
 				if msg.Command == labelDisableCommand {
-					labeledResponse = false
+					delete(labeledResponse, network)
 					continue
 				}
-				if labeledResponse {
+				if labeledResponse[network] && msg.Tags["batch"] == "" &&
+					!(msg.Command == "BATCH" && len(msg.Params) > 0 && strings.HasPrefix(msg.Params[0], "-")) {
 					label := strconv.Itoa(labelOff)
 					labelOff++
 					if msg.Tags == nil {

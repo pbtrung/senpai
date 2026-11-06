@@ -338,7 +338,7 @@ func (msg *Message) String() string {
 			sb.WriteString(p)
 		}
 		lastParam := msg.Params[len(msg.Params)-1]
-		if !strings.ContainsRune(lastParam, ' ') && !strings.HasPrefix(lastParam, ":") {
+		if lastParam != "" && !strings.ContainsRune(lastParam, ' ') && !strings.HasPrefix(lastParam, ":") {
 			sb.WriteRune(' ')
 			sb.WriteString(lastParam)
 		} else {

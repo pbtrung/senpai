@@ -109,6 +109,26 @@ func (l *Line) NewLines(vx *Vaxis, width int) []int {
 	l.newLines = l.newLines[:0]
 	l.width = width
 
+	// Wrap each explicit line independently, keeping byte offsets into the
+	// original styled body so links and formatting survive multiline messages.
+	if strings.ContainsRune(l.Body.string, '\n') {
+		offset := 0
+		parts := strings.Split(l.Body.string, "\n")
+		for i, part := range parts {
+			segment := Line{Body: PlainString(part)}
+			segment.computeSplitPoints(vx)
+			for _, split := range segment.NewLines(vx, width) {
+				l.newLines = append(l.newLines, offset+split)
+			}
+			offset += len(part)
+			if i < len(parts)-1 {
+				l.newLines = append(l.newLines, offset)
+				offset++
+			}
+		}
+		return l.newLines
+	}
+
 	x := 0
 	for i := 1; i < len(l.splitPoints); i++ {
 		// Iterate through the split points 2 by 2.  Split points are placed at
@@ -201,6 +221,7 @@ type buffer struct {
 	highlights    int
 	notifications []int
 	unread        bool
+	unreadLatest  time.Time // latest unread message from a server target snapshot
 	read          time.Time
 	openedOnce    bool
 
@@ -640,6 +661,7 @@ func (bs *BufferList) clearRead(i int) {
 	b := &bs.list[i]
 	b.highlights = 0
 	b.unread = false
+	b.unreadLatest = time.Time{}
 	if len(b.notifications) > 0 {
 		for _, id := range b.notifications {
 			notifyClose(id)
@@ -648,12 +670,29 @@ func (bs *BufferList) clearRead(i int) {
 	}
 }
 
+// SetUnread applies a server snapshot without downloading the target's history.
+func (bs *BufferList) SetUnread(netID, title string, latest time.Time, unread, mention bool) {
+	_, b := bs.at(netID, title)
+	if b == nil || !latest.After(b.read) {
+		return
+	}
+	if unread {
+		b.unreadLatest = latest
+		if !bs.focused || b != bs.cur() {
+			b.unread = true
+			if mention && b.highlights == 0 {
+				b.highlights = 1
+			}
+		}
+	}
+}
+
 func (bs *BufferList) SetRead(netID, title string, timestamp time.Time) {
 	i, b := bs.at(netID, title)
 	if b == nil || i < 0 {
 		return
 	}
-	clearRead := true
+	clearRead := !b.unreadLatest.After(timestamp)
 	for i := len(b.lines) - 1; i >= 0; i-- {
 		line := &b.lines[i]
 		if !line.At.After(timestamp) {
@@ -1297,6 +1336,11 @@ func (bs *BufferList) DrawTimeline(ui *UI, x0, y0, nickColWidth int) {
 				}
 			}
 
+			if l[0] == '\n' {
+				lbi++
+				l = l[1:]
+				continue
+			}
 			if y != yi && x == x1 && IsSplitRune(l[0]) {
 				lbi += len(string(l[0]))
 				l = l[1:]

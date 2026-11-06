@@ -68,6 +68,9 @@ var SupportedCapabilities = map[string]bool{
 
 	"draft/chathistory":               true,
 	"draft/event-playback":            true,
+	"draft/multiline":                 true,
+	"soju.im/multiplex":               true,
+	"soju.im/unread":                  true,
 	"draft/metadata-2":                true,
 	"draft/read-marker":               true,
 	"soju.im/bouncer-networks-notify": true,
@@ -123,11 +126,15 @@ type SessionParams struct {
 }
 
 type Session struct {
-	out          chan<- Message
-	closed       bool
-	registered   bool
-	typings      *Typings               // incoming typing notifications.
-	typingStamps map[string]typingStamp // user typing instants.
+	out              chan<- Message
+	virtual          bool
+	parent           *Session
+	multilineID      uint64
+	multilineBatches map[string]*multilineBatch
+	closed           bool
+	registered       bool
+	typings          *Typings               // incoming typing notifications.
+	typingStamps     map[string]typingStamp // user typing instants.
 
 	nick     string
 	nickCf   string // casemapped nickname.
@@ -183,7 +190,7 @@ type Session struct {
 	receivedUserMode bool
 }
 
-func NewSession(out chan<- Message, params SessionParams) *Session {
+func newSession(out chan<- Message, params SessionParams) *Session {
 	s := &Session{
 		out:             out,
 		typings:         NewTypings(),
@@ -213,22 +220,31 @@ func NewSession(out chan<- Message, params SessionParams) *Session {
 		pendingChannels: map[string]time.Time{},
 	}
 
-	s.out <- NewMessage("CAP", "LS", "302")
+	s.multilineBatches = make(map[string]*multilineBatch)
+	return s
+}
+
+func NewSession(out chan<- Message, params SessionParams) *Session {
+	s := newSession(out, params)
+	s.send(NewMessage("CAP", "LS", "302"))
 	for capability, immediate := range SupportedCapabilities {
+		if capability == "soju.im/multiplex" && s.netID != "" {
+			continue
+		}
 		if immediate || s.netID != "" {
-			s.out <- NewMessage("CAP", "REQ", capability)
+			s.send(NewMessage("CAP", "REQ", capability))
 		}
 	}
-	s.out <- NewMessage("NICK", s.nick)
-	s.out <- NewMessage("USER", s.user, "0", "*", s.real)
+	s.send(NewMessage("NICK", s.nick))
+	s.send(NewMessage("USER", s.user, "0", "*", s.real))
 	if s.auth != nil && s.auth.Early() {
 		h := s.auth.Handshake()
-		s.out <- NewMessage("AUTHENTICATE", h)
+		s.send(NewMessage("AUTHENTICATE", h))
 		res, err := s.auth.Respond("+")
 		if err != nil {
-			s.out <- NewMessage("AUTHENTICATE", "*")
+			s.send(NewMessage("AUTHENTICATE", "*"))
 		} else {
-			s.out <- NewMessage("AUTHENTICATE", res)
+			s.send(NewMessage("AUTHENTICATE", res))
 		}
 		s.auth = nil
 	}
@@ -246,7 +262,9 @@ func (s *Session) Close() {
 	}
 	s.closed = true
 	s.typings.Close()
-	close(s.out)
+	if !s.virtual {
+		close(s.out)
+	}
 }
 
 // HasCapability reports whether the given capability has been negotiated
@@ -409,18 +427,18 @@ func (s *Session) Topic(channel string) (topic string, who *Prefix, at time.Time
 }
 
 func (s *Session) SendRaw(raw string) {
-	s.out <- NewMessage(raw)
+	s.send(NewMessage(raw))
 }
 
 func (s *Session) Send(command string, params ...string) {
-	s.out <- NewMessage(command, params...)
+	s.send(NewMessage(command, params...))
 }
 
 func (s *Session) List(pattern string) {
 	if pattern != "" {
-		s.out <- NewMessage("LIST", pattern)
+		s.send(NewMessage("LIST", pattern))
 	} else {
-		s.out <- NewMessage("LIST")
+		s.send(NewMessage("LIST"))
 	}
 }
 
@@ -428,34 +446,34 @@ func (s *Session) Join(channel, key string) {
 	channelCf := s.Casemap(channel)
 	s.pendingChannels[channelCf] = time.Now()
 	if key == "" {
-		s.out <- NewMessage("JOIN", channel)
+		s.send(NewMessage("JOIN", channel))
 	} else {
-		s.out <- NewMessage("JOIN", channel, key)
+		s.send(NewMessage("JOIN", channel, key))
 	}
 }
 
 func (s *Session) Part(channel, reason string) {
-	s.out <- NewMessage("PART", channel, reason)
+	s.send(NewMessage("PART", channel, reason))
 }
 
 func (s *Session) ChangeTopic(channel, topic string) {
-	s.out <- NewMessage("TOPIC", channel, topic)
+	s.send(NewMessage("TOPIC", channel, topic))
 }
 
 func (s *Session) Quit(reason string) {
-	s.out <- NewMessage("QUIT", reason)
+	s.send(NewMessage("QUIT", reason))
 }
 
 func (s *Session) ChangeNick(nick string) {
-	s.out <- NewMessage("NICK", nick)
+	s.send(NewMessage("NICK", nick))
 }
 
 func (s *Session) Who(target string) {
 	if s.whox {
 		// only request what we need, to optimize server who cache hits and reduce traffic
-		s.out <- NewMessage("WHO", target, "%uhnf")
+		s.send(NewMessage("WHO", target, "%uhnf"))
 	} else {
-		s.out <- NewMessage("WHO", target)
+		s.send(NewMessage("WHO", target))
 	}
 }
 
@@ -465,7 +483,7 @@ func (s *Session) ChangeMode(channel, flags string, args []string) {
 	} else {
 		args = append([]string{channel}, args...)
 	}
-	s.out <- NewMessage("MODE", args...)
+	s.send(NewMessage("MODE", args...))
 }
 
 func (s *Session) Search(target, text string) {
@@ -477,14 +495,14 @@ func (s *Session) Search(target, text string) {
 	if target != "" {
 		attrs["in"] = target
 	}
-	s.out <- NewMessage("SEARCH", formatTags(attrs))
+	s.send(NewMessage("SEARCH", formatTags(attrs)))
 }
 
 func (s *Session) Away(message string) {
 	if message != "" {
-		s.out <- NewMessage("AWAY", message)
+		s.send(NewMessage("AWAY", message))
 	} else {
-		s.out <- NewMessage("AWAY")
+		s.send(NewMessage("AWAY"))
 	}
 }
 
@@ -527,10 +545,7 @@ func (s *Session) PrivMsg(target, content string) {
 		len(s.user) -
 		hostLen -
 		len(target)
-	chunks := splitChunks(content, maxMessageLen)
-	for _, chunk := range chunks {
-		s.out <- NewMessage("PRIVMSG", target, chunk)
-	}
+	s.sendText("PRIVMSG", target, content, maxMessageLen)
 	targetCf := s.Casemap(target)
 	delete(s.typingStamps, targetCf)
 }
@@ -554,7 +569,7 @@ func (s *Session) Typing(target string) {
 		Type:  TypingActive,
 		Limit: t.Limit,
 	}
-	s.out <- NewMessage("TAGMSG", target).WithTag("+typing", "active")
+	s.send(NewMessage("TAGMSG", target).WithTag("+typing", "active"))
 }
 
 func (s *Session) TypingStop(target string) {
@@ -577,18 +592,18 @@ func (s *Session) TypingStop(target string) {
 		Type:  TypingDone,
 		Limit: t.Limit,
 	}
-	s.out <- NewMessage("TAGMSG", target).WithTag("+typing", "done")
+	s.send(NewMessage("TAGMSG", target).WithTag("+typing", "done"))
 }
 
 func (s *Session) ReadGet(target string) {
 	if _, ok := s.enabledCaps["draft/read-marker"]; ok {
-		s.out <- NewMessage("MARKREAD", target)
+		s.send(NewMessage("MARKREAD", target))
 	}
 }
 
 func (s *Session) ReadSet(target string, timestamp time.Time) {
 	if _, ok := s.enabledCaps["draft/read-marker"]; ok {
-		s.out <- NewMessage("MARKREAD", target, formatTimestamp(timestamp))
+		s.send(NewMessage("MARKREAD", target, formatTimestamp(timestamp)))
 	}
 }
 
@@ -605,7 +620,7 @@ func (s *Session) MutedSet(target string, muted bool) (ok bool) {
 	}
 	k := "soju.im/muted"
 	if _, ok = s.metadataSubs[k]; ok {
-		s.out <- NewMessage("METADATA", target, "SET", k, v)
+		s.send(NewMessage("METADATA", target, "SET", k, v))
 	}
 	return
 }
@@ -623,7 +638,7 @@ func (s *Session) PinnedSet(target string, pinned bool) (ok bool) {
 	}
 	k := "soju.im/pinned"
 	if _, ok = s.metadataSubs[k]; ok {
-		s.out <- NewMessage("METADATA", target, "SET", "soju.im/pinned", v)
+		s.send(NewMessage("METADATA", target, "SET", "soju.im/pinned", v))
 	}
 	return
 }
@@ -633,7 +648,7 @@ func (s *Session) MonitorAdd(target string) {
 	if _, ok := s.monitors[targetCf]; !ok {
 		s.monitors[targetCf] = struct{}{}
 		if s.monitor {
-			s.out <- NewMessage("MONITOR", "+", target)
+			s.send(NewMessage("MONITOR", "+", target))
 		}
 	}
 }
@@ -643,17 +658,18 @@ func (s *Session) MonitorRemove(target string) {
 	if _, ok := s.monitors[targetCf]; ok {
 		delete(s.monitors, targetCf)
 		if s.monitor {
-			s.out <- NewMessage("MONITOR", "-", target)
+			s.send(NewMessage("MONITOR", "-", target))
 		}
 	}
 }
 
 type HistoryRequest struct {
-	s       *Session
-	target  string
-	command string
-	bounds  []string
-	limit   int
+	s              *Session
+	target         string
+	command        string
+	bounds         []string
+	limit          int
+	requestedLimit int
 }
 
 func formatTimestamp(t time.Time) string {
@@ -663,6 +679,7 @@ func formatTimestamp(t time.Time) string {
 }
 
 func (r *HistoryRequest) WithLimit(limit int) *HistoryRequest {
+	r.requestedLimit = limit
 	if limit < r.s.historyLimit {
 		r.limit = limit
 	} else {
@@ -689,7 +706,7 @@ func (r *HistoryRequest) doRequest() {
 	}
 	args = append(args, r.bounds...)
 	args = append(args, strconv.Itoa(r.limit))
-	r.s.out <- NewMessage("CHATHISTORY", args...)
+	r.s.send(NewMessage("CHATHISTORY", args...))
 }
 
 func (r *HistoryRequest) After(t time.Time) {
@@ -714,6 +731,9 @@ func (r *HistoryRequest) Targets(start time.Time, end time.Time) {
 	r.command = "TARGETS"
 	r.bounds = []string{formatTimestamp(start), formatTimestamp(end)}
 	r.target = ""
+	if r.s.HasCapability("soju.im/unread") && r.requestedLimit > 0 {
+		r.limit = r.requestedLimit
+	}
 	r.doRequest()
 }
 
@@ -726,22 +746,22 @@ func (s *Session) NewHistoryRequest(target string) *HistoryRequest {
 }
 
 func (s *Session) Whois(nick string) {
-	s.out <- NewMessage("WHOIS", nick)
+	s.send(NewMessage("WHOIS", nick))
 }
 
 func (s *Session) Whowas(nick string) {
-	s.out <- NewMessage("WHOWAS", nick)
+	s.send(NewMessage("WHOWAS", nick))
 }
 
 func (s *Session) Invite(nick, channel string) {
-	s.out <- NewMessage("INVITE", nick, channel)
+	s.send(NewMessage("INVITE", nick, channel))
 }
 
 func (s *Session) Kick(nick, channel, comment string) {
 	if comment == "" {
-		s.out <- NewMessage("KICK", channel, nick)
+		s.send(NewMessage("KICK", channel, nick))
 	} else {
-		s.out <- NewMessage("KICK", channel, nick, comment)
+		s.send(NewMessage("KICK", channel, nick, comment))
 	}
 }
 
@@ -770,7 +790,7 @@ func (s *Session) handleUnregistered(msg Message) (Event, error) {
 			return nil, err
 		}
 
-		s.out <- NewMessage("NICK", nick+"_")
+		s.send(NewMessage("NICK", nick+"_"))
 	case rplSaslsuccess:
 		if s.auth != nil {
 			s.endRegistration()
@@ -782,6 +802,12 @@ func (s *Session) handleUnregistered(msg Message) (Event, error) {
 }
 
 func (s *Session) handleRegistered(msg Message) (Event, error) {
+	if handled, assembled, err := s.handleMultiline(msg); handled {
+		if err != nil || assembled == nil {
+			return nil, err
+		}
+		return s.handleRegistered(*assembled)
+	}
 	if id, ok := msg.Tags["batch"]; ok {
 		if id == s.targetsBatchID {
 			var target, timestamp string
@@ -793,6 +819,10 @@ func (s *Session) handleRegistered(msg Message) (Event, error) {
 				return nil, nil
 			}
 			s.targetsBatch.Targets[target] = t
+			_, unread := msg.Tags["soju.im/unread"]
+			_, mention := msg.Tags["soju.im/mention"]
+			s.targetsBatch.Unread[target] = TargetUnread{Unread: unread, Mention: mention}
+			return nil, nil
 		} else if id == s.searchBatchID {
 			ev, err := s.handleMessageRegistered(msg, true)
 			if err != nil {
@@ -819,6 +849,7 @@ func (s *Session) handleRegistered(msg Message) (Event, error) {
 			if ev != nil {
 				s.chBatches[id] = HistoryEvent{
 					Target:   b.Target,
+					End:      b.End,
 					Messages: append(b.Messages, ev),
 				}
 			}
@@ -842,9 +873,9 @@ func (s *Session) handleMessageRegistered(msg Message, playback bool) (Event, er
 
 		res, err := s.auth.Respond(payload)
 		if err != nil {
-			s.out <- NewMessage("AUTHENTICATE", "*")
+			s.send(NewMessage("AUTHENTICATE", "*"))
 		} else {
-			s.out <- NewMessage("AUTHENTICATE", res)
+			s.send(NewMessage("AUTHENTICATE", res))
 		}
 	case rplLoggedin:
 		var nuh string
@@ -945,21 +976,21 @@ func (s *Session) handleMessageRegistered(msg Message, playback bool) (Event, er
 
 				if s.auth != nil && c.Name == "sasl" {
 					h := s.auth.Handshake()
-					s.out <- NewMessage("AUTHENTICATE", h)
+					s.send(NewMessage("AUTHENTICATE", h))
 				} else if len(s.channels) != 0 && c.Name == "multi-prefix" {
 					// TODO merge NAMES commands
 					for channel := range s.channels {
-						s.out <- NewMessage("NAMES", channel)
+						s.send(NewMessage("NAMES", channel))
 					}
 				} else if c.Name == "labeled-response" {
 					if c.Enable {
-						s.out <- Message{
+						s.send(Message{
 							Command: labelEnableCommand,
-						}
+						})
 					} else {
-						s.out <- Message{
+						s.send(Message{
 							Command: labelDisableCommand,
-						}
+						})
 					}
 				}
 			}
@@ -970,6 +1001,9 @@ func (s *Session) handleMessageRegistered(msg Message, playback bool) (Event, er
 			for _, c := range ParseCaps(caps) {
 				s.availableCaps[c.Name] = c.Value
 				immediate, ok := SupportedCapabilities[c.Name]
+				if c.Name == "soju.im/multiplex" && s.netID != "" {
+					continue
+				}
 				if !ok {
 					continue
 				}
@@ -983,16 +1017,16 @@ func (s *Session) handleMessageRegistered(msg Message, playback bool) (Event, er
 				reqs = append(reqs, c.Name)
 			}
 			if len(reqs) > 0 {
-				s.out <- NewMessage("CAP", "REQ", strings.Join(reqs, " "))
+				s.send(NewMessage("CAP", "REQ", strings.Join(reqs, " ")))
 			}
 		case "DEL":
 			for _, c := range ParseCaps(caps) {
 				delete(s.availableCaps, c.Name)
 				delete(s.enabledCaps, c.Name)
 				if c.Name == "labeled-response" {
-					s.out <- Message{
+					s.send(Message{
 						Command: labelDisableCommand,
-					}
+					})
 				}
 			}
 		}
@@ -1469,7 +1503,7 @@ func (s *Session) handleMessageRegistered(msg Message, playback bool) (Event, er
 				s.chBatches[id] = HistoryEvent{Target: target, End: end}
 			case "draft/chathistory-targets":
 				s.targetsBatchID = id
-				s.targetsBatch = HistoryTargetsEvent{Targets: make(map[string]time.Time)}
+				s.targetsBatch = HistoryTargetsEvent{Targets: make(map[string]time.Time), Unread: make(map[string]TargetUnread)}
 			case "soju.im/search":
 				s.searchBatchID = id
 				s.searchBatch = SearchEvent{}
@@ -1610,7 +1644,7 @@ func (s *Session) handleMessageRegistered(msg Message, playback bool) (Event, er
 			return nil, err
 		}
 
-		s.out <- NewMessage("PONG", payload)
+		s.send(NewMessage("PONG", payload))
 	case "ERROR":
 		s.Close()
 	case "FAIL", "WARN", "NOTE":
@@ -2316,13 +2350,13 @@ func (s *Session) endRegistration() {
 	}
 	if len(s.enabledCaps) == 0 || s.HasCapability("draft/metadata-2") {
 		// Best effort to avoid a round trip: subscribe to metadata if explicitly supported or if CAPs are not yet known
-		s.out <- NewMessage("METADATA", "*", "SUB", "soju.im/pinned", "soju.im/muted")
+		s.send(NewMessage("METADATA", "*", "SUB", "soju.im/pinned", "soju.im/muted"))
 	}
 	if s.netID != "" {
-		s.out <- NewMessage("BOUNCER", "BIND", s.netID)
-		s.out <- NewMessage("CAP", "END")
+		s.send(NewMessage("BOUNCER", "BIND", s.netID))
+		s.send(NewMessage("CAP", "END"))
 	} else {
-		s.out <- NewMessage("CAP", "END")
-		s.out <- NewMessage("BOUNCER", "LISTNETWORKS")
+		s.send(NewMessage("CAP", "END"))
+		s.send(NewMessage("BOUNCER", "LISTNETWORKS"))
 	}
 }

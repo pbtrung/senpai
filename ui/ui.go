@@ -585,6 +585,10 @@ func (ui *UI) SetMuted(netID, buffer string, muted bool) int {
 	return ui.bs.SetMuted(netID, buffer, muted)
 }
 
+func (ui *UI) SetUnread(netID, buffer string, latest time.Time, unread, mention bool) {
+	ui.bs.SetUnread(netID, buffer, latest, unread, mention)
+}
+
 func (ui *UI) SetRead(netID, buffer string, timestamp time.Time) {
 	ui.bs.SetRead(netID, buffer, timestamp)
 }
