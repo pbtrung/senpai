@@ -1,0 +1,508 @@
+package senpai
+
+import (
+	"fmt"
+	"net"
+	"net/netip"
+	"net/url"
+	"os"
+	"os/exec"
+	"path"
+	"strconv"
+	"strings"
+
+	"go.rockorager.dev/vaxis"
+
+	"git.sr.ht/~delthas/senpai/ui"
+
+	"codeberg.org/emersion/go-scfg"
+)
+
+func parseColor(s string, c *vaxis.Color) error {
+	if strings.HasPrefix(s, "#") {
+		hex, err := strconv.ParseInt(s[1:], 16, 32)
+		if err != nil {
+			return err
+		}
+
+		*c = vaxis.HexColor(uint32(hex))
+		return nil
+	}
+	ok := true
+	switch s {
+	case "black":
+		*c = vaxis.IndexColor(0)
+	case "maroon":
+		*c = vaxis.IndexColor(1)
+	case "green":
+		*c = vaxis.IndexColor(2)
+	case "olive":
+		*c = vaxis.IndexColor(3)
+	case "navy":
+		*c = vaxis.IndexColor(4)
+	case "purple":
+		*c = vaxis.IndexColor(5)
+	case "teal":
+		*c = vaxis.IndexColor(6)
+	case "silver":
+		*c = vaxis.IndexColor(7)
+	case "gray", "grey":
+		*c = vaxis.IndexColor(8)
+	case "red":
+		*c = vaxis.IndexColor(9)
+	case "lime":
+		*c = vaxis.IndexColor(10)
+	case "yellow":
+		*c = vaxis.IndexColor(11)
+	case "blue":
+		*c = vaxis.IndexColor(12)
+	case "fuschia":
+		*c = vaxis.IndexColor(13)
+	case "aqua":
+		*c = vaxis.IndexColor(14)
+	case "white":
+		*c = vaxis.IndexColor(15)
+	default:
+		ok = false
+	}
+	if ok {
+		return nil
+	}
+
+	code, err := strconv.Atoi(s)
+	if err != nil {
+		return err
+	}
+
+	if code == -1 {
+		*c = ui.ColorDefault
+		return nil
+	}
+
+	if code < 0 || code > 255 {
+		return fmt.Errorf("color code must be between 0-255. If you meant to use true colors, use #aabbcc notation")
+	}
+
+	*c = vaxis.IndexColor(uint8(code))
+
+	return nil
+}
+
+type Config struct {
+	Addr          string
+	Nick          string
+	Real          string
+	User          string
+	Password      *string
+	TLS           bool
+	TLSSkipVerify bool
+	LocalAddr     *net.TCPAddr
+
+	Channels []string
+
+	Typings    bool
+	Mouse      bool
+	SpellCheck bool
+
+	Highlights       []string
+	OnHighlightPath  string
+	OnHighlightBeep  bool
+	NickColWidth     int
+	ChanColWidth     int
+	ChanColEnabled   bool
+	MemberColWidth   int
+	MemberColEnabled bool
+	TextMaxWidth     int
+	StatusEnabled    bool
+	Shortcuts        map[string][]string
+
+	Colors ui.ConfigColors
+
+	OpenLink          string
+	Debug             bool
+	Transient         bool
+	LocalIntegrations bool
+
+	WithTTY     string
+	WithConsole vaxis.Console
+}
+
+func DefaultHighlightPath() (string, error) {
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return path.Join(configDir, "senpai", "highlight"), nil
+}
+
+func Defaults() Config {
+	return Config{
+		Addr:             "",
+		Nick:             "",
+		Real:             "",
+		User:             "",
+		Password:         nil,
+		TLS:              true,
+		TLSSkipVerify:    false,
+		Channels:         nil,
+		Typings:          true,
+		Mouse:            true,
+		SpellCheck:       false,
+		Highlights:       nil,
+		OnHighlightPath:  "",
+		OnHighlightBeep:  false,
+		NickColWidth:     14,
+		ChanColWidth:     16,
+		ChanColEnabled:   true,
+		MemberColWidth:   16,
+		MemberColEnabled: true,
+		TextMaxWidth:     0,
+		StatusEnabled:    true,
+		Colors: ui.ConfigColors{
+			Status: ui.ColorDefault, // Overriden by UI later.
+			Prompt: ui.ColorDefault,
+			Unread: ui.ColorDefault,
+			Nicks: ui.ColorScheme{
+				Type:   ui.ColorSchemeBase,
+				Others: ui.ColorDefault,
+			},
+		},
+		Shortcuts:         make(map[string][]string),
+		Debug:             false,
+		Transient:         false,
+		LocalIntegrations: true,
+	}
+}
+
+func ParseAddr(addr string, cfg *Config) error {
+	if addr == "" {
+		return nil
+	}
+	if !strings.Contains(addr, "://") {
+		addr = "irc://" + addr
+	}
+	u, err := url.Parse(addr)
+	if err != nil && strings.Contains(addr, "%") && !strings.Contains(addr, "%25") {
+		// Escape any unescaped IPv6 zone identifiers, since it is not intuitive that they should be escaped,
+		// especially when no scheme is provided.
+		addr = strings.ReplaceAll(addr, "%", "%25")
+		u, err = url.Parse(addr)
+	}
+	if err != nil {
+		return err
+	}
+	switch u.Scheme {
+	case "ircs+insecure":
+		cfg.TLS = true
+		cfg.TLSSkipVerify = true
+	case "ircs":
+		cfg.TLS = true
+	case "irc+insecure":
+		cfg.TLS = false
+	case "irc":
+		// Could be TLS or plaintext, keep TLS as is.
+	default:
+		return fmt.Errorf("invalid IRC addr scheme: %v", addr)
+	}
+	if u := u.User; u != nil {
+		cfg.User = u.Username()
+		if p, ok := u.Password(); ok {
+			cfg.Password = &p
+		} else {
+			cfg.Password = nil
+		}
+	}
+	cfg.Addr = u.Host
+	target, _, _ := strings.Cut(strings.TrimLeft(u.Path, "/"), "/")
+	if target != "" {
+		cfg.Channels = []string{target}
+	}
+	return nil
+}
+
+func LoadConfigFile(filename string) (Config, error) {
+	cfg := Defaults()
+
+	err := unmarshal(filename, &cfg)
+	if err != nil {
+		return Config{}, err
+	}
+	if err := ParseAddr(cfg.Addr, &cfg); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
+}
+
+func unmarshal(filename string, cfg *Config) (err error) {
+	directives, err := scfg.Load(filename)
+	if err != nil {
+		return fmt.Errorf("error parsing scfg: %w", err)
+	}
+
+	for _, d := range directives {
+		switch d.Name {
+		case "address":
+			if err := d.ParseParams(&cfg.Addr); err != nil {
+				return err
+			}
+		case "local-address":
+			var localAddr string
+			if err := d.ParseParams(&localAddr); err != nil {
+				return err
+			}
+			addr, err := netip.ParseAddr(localAddr)
+			if err != nil {
+				return fmt.Errorf("invalid local-address %q: %v", localAddr, err)
+			}
+			cfg.LocalAddr = net.TCPAddrFromAddrPort(netip.AddrPortFrom(addr, 0))
+		case "nickname":
+			if err := d.ParseParams(&cfg.Nick); err != nil {
+				return err
+			}
+		case "username":
+			if err := d.ParseParams(&cfg.User); err != nil {
+				return err
+			}
+		case "realname":
+			if err := d.ParseParams(&cfg.Real); err != nil {
+				return err
+			}
+		case "password":
+			// if a password-cmd is provided, don't use this value
+			if directives.Get("password-cmd") != nil {
+				continue
+			}
+
+			var password string
+			if err := d.ParseParams(&password); err != nil {
+				return err
+			}
+			cfg.Password = &password
+		case "password-cmd":
+			var cmdName string
+			if err := d.ParseParams(&cmdName); err != nil {
+				return err
+			}
+
+			cmd := exec.Command(cmdName, d.Params[1:]...)
+			var stdout []byte
+			if stdout, err = cmd.Output(); err != nil {
+				return fmt.Errorf("error running password command: %v", err)
+			}
+
+			passCmdOut := strings.Split(string(stdout), "\n")
+			if len(passCmdOut) < 1 || strings.TrimSpace(passCmdOut[0]) == "" {
+				return fmt.Errorf("password command returned no data")
+			}
+			cfg.Password = &passCmdOut[0]
+		case "channel":
+			// TODO: does this work with soju.im/bouncer-networks extension?
+			cfg.Channels = append(cfg.Channels, d.Params...)
+		case "highlight":
+			cfg.Highlights = append(cfg.Highlights, d.Params...)
+		case "on-highlight-path":
+			if err := d.ParseParams(&cfg.OnHighlightPath); err != nil {
+				return err
+			}
+		case "on-highlight-beep":
+			var onHighlightBeep string
+			if err := d.ParseParams(&onHighlightBeep); err != nil {
+				return err
+			}
+
+			if cfg.OnHighlightBeep, err = strconv.ParseBool(onHighlightBeep); err != nil {
+				return err
+			}
+		case "pane-widths":
+			for _, child := range d.Children {
+				switch child.Name {
+				case "nicknames":
+					var nicknames string
+					if err := child.ParseParams(&nicknames); err != nil {
+						return err
+					}
+
+					if cfg.NickColWidth, err = strconv.Atoi(nicknames); err != nil {
+						return err
+					}
+				case "channels":
+					var channelsStr string
+					if err := child.ParseParams(&channelsStr); err != nil {
+						return err
+					}
+					channels, err := strconv.Atoi(channelsStr)
+					if err != nil {
+						return err
+					}
+					if channels <= 0 {
+						cfg.ChanColEnabled = false
+						if channels < 0 {
+							cfg.ChanColWidth = -channels
+						}
+					} else {
+						cfg.ChanColWidth = channels
+					}
+				case "members":
+					var membersStr string
+					if err := child.ParseParams(&membersStr); err != nil {
+						return err
+					}
+					members, err := strconv.Atoi(membersStr)
+					if err != nil {
+						return err
+					}
+					if members <= 0 {
+						cfg.MemberColEnabled = false
+						if members < 0 {
+							cfg.MemberColWidth = -members
+						}
+					} else {
+						cfg.MemberColWidth = members
+					}
+				case "text":
+					var text string
+					if err := child.ParseParams(&text); err != nil {
+						return err
+					}
+
+					if cfg.TextMaxWidth, err = strconv.Atoi(text); err != nil {
+						return err
+					}
+				default:
+					return fmt.Errorf("unknown directive %q", child.Name)
+				}
+			}
+		case "tls":
+			var tls string
+			if err := d.ParseParams(&tls); err != nil {
+				return err
+			}
+
+			if cfg.TLS, err = strconv.ParseBool(tls); err != nil {
+				return err
+			}
+		case "typings":
+			var typings string
+			if err := d.ParseParams(&typings); err != nil {
+				return err
+			}
+
+			if cfg.Typings, err = strconv.ParseBool(typings); err != nil {
+				return err
+			}
+		case "mouse":
+			var mouse string
+			if err := d.ParseParams(&mouse); err != nil {
+				return err
+			}
+
+			if cfg.Mouse, err = strconv.ParseBool(mouse); err != nil {
+				return err
+			}
+		case "spell-check":
+			var spellCheck string
+			if err := d.ParseParams(&spellCheck); err != nil {
+				return err
+			}
+			if cfg.SpellCheck, err = strconv.ParseBool(spellCheck); err != nil {
+				return err
+			}
+		case "colors":
+			for _, child := range d.Children {
+				var colorStr string
+				if err := child.ParseParams(&colorStr); err != nil {
+					return err
+				}
+
+				switch child.Name {
+				case "nicks":
+					switch colorStr {
+					case "base":
+						cfg.Colors.Nicks.Type = ui.ColorSchemeBase
+					case "extended":
+						cfg.Colors.Nicks.Type = ui.ColorSchemeExtended
+					case "fixed":
+						cfg.Colors.Nicks.Type = ui.ColorSchemeFixed
+						if len(child.Params) >= 2 {
+							if err = parseColor(child.Params[1], &cfg.Colors.Nicks.Others); err != nil {
+								return err
+							}
+						}
+						if len(child.Params) >= 3 {
+							if err = parseColor(child.Params[2], &cfg.Colors.Nicks.Self); err != nil {
+								return err
+							}
+						}
+					case "self":
+						var selfStr string
+						if err := child.ParseParams(nil, &selfStr); err != nil {
+							return err
+						}
+						if err = parseColor(selfStr, &cfg.Colors.Nicks.Self); err != nil {
+							return err
+						}
+					default:
+						return fmt.Errorf("unknown nick color scheme %q", colorStr)
+					}
+					continue
+				case "status":
+					if colorStr == "disabled" {
+						cfg.StatusEnabled = false
+						continue
+					}
+				}
+
+				var color vaxis.Color
+				if err = parseColor(colorStr, &color); err != nil {
+					return err
+				}
+				switch child.Name {
+				case "prompt":
+					cfg.Colors.Prompt = color
+				case "unread":
+					cfg.Colors.Unread = color
+				case "status":
+					cfg.Colors.Status = color
+				default:
+					return fmt.Errorf("unknown colors directive %q", child.Name)
+				}
+			}
+		case "shortcuts":
+			for _, child := range d.Children {
+				if err := child.ParseParams(nil); err != nil {
+					return err
+				}
+				cfg.Shortcuts[child.Name] = child.Params
+			}
+		case "debug":
+			var debug string
+			if err := d.ParseParams(&debug); err != nil {
+				return err
+			}
+
+			if cfg.Debug, err = strconv.ParseBool(debug); err != nil {
+				return err
+			}
+		case "transient":
+			var transient string
+			if err := d.ParseParams(&transient); err != nil {
+				return err
+			}
+			if cfg.Transient, err = strconv.ParseBool(transient); err != nil {
+				return err
+			}
+		case "local-integrations":
+			var localIntegrations string
+			if err := d.ParseParams(&localIntegrations); err != nil {
+				return err
+			}
+			if cfg.LocalIntegrations, err = strconv.ParseBool(localIntegrations); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("unknown directive %q", d.Name)
+		}
+	}
+
+	return
+}

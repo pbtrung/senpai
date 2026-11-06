@@ -1,0 +1,14 @@
+[Desktop Entry]
+Version=1.5
+Name=senpai
+
+GenericName=IRC Client
+Comment=Chat on IRC with senpai
+Keywords=Chat;IRC;IM;Messaging
+Categories=Network;InstantMessaging;Chat;IRCClient;ConsoleOnly
+
+Type=Application
+MimeType=x-scheme-handler/irc;x-scheme-handler/ircs
+Icon=senpai
+Terminal=true
+Exec=senpai %u
