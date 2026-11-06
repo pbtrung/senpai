@@ -11,7 +11,7 @@ messages. See the [compatibility notes](doc/soju-rs.md) for details.
 
 ## Installation
 
-To build from source, install Go 1.21 or later, Make, and
+To build from source, install Go 1.26 or later, Make, and
 [scdoc](https://git.sr.ht/~sircmpwn/scdoc) for the manual pages, then run:
 
 ```sh
