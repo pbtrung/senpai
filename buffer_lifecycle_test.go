@@ -44,8 +44,12 @@ func TestBufferEntryLifecycle(t *testing.T) {
 	app.RestoreBuffers([]BufferState{
 		{Name: "alice", Read: stamp}, {Name: "bob", ClosedAt: stamp.Add(time.Minute)}, {Name: "#c"},
 	})
+	app.SwitchToBuffer("", "ALICE")
 	if got := app.restoreNetworkBuffers("", session); !reflect.DeepEqual(got, []string{"#c"}) {
 		t.Fatalf("direct connection did not restore saved channels: %v", got)
+	}
+	if network, name := win.CurrentBuffer(); network != "" || name != "alice" {
+		t.Fatalf("last primary-connection query was not selected: %q %q", network, name)
 	}
 	if got := win.ReadMarker("", "alice"); !got.Equal(stamp) {
 		t.Fatalf("saved read marker not applied to restored query: %v", got)

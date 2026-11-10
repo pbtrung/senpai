@@ -369,7 +369,9 @@ func getLastBuffer(hash string) (netID, buffer string) {
 		return "", ""
 	}
 
-	fields := strings.SplitN(strings.TrimSpace(string(buf)), " ", 2)
+	// The empty network ID denotes the primary connection, so its leading
+	// separator is meaningful. A network's home buffer has an empty target.
+	fields := strings.SplitN(strings.TrimRight(string(buf), "\r\n"), " ", 2)
 	if len(fields) < 2 {
 		return "", ""
 	}

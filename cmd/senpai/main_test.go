@@ -43,3 +43,25 @@ func TestConversationListPersistence(t *testing.T) {
 		t.Fatal("corrupt list was restored")
 	}
 }
+
+func TestLastBufferPreservesEmptyFields(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	for _, test := range []struct {
+		text, network, name string
+	}{
+		{" alice", "", "alice"},
+		{" ", "", ""},
+		{"1 #c", "1", "#c"},
+		{"1 ", "1", ""},
+		{"1 #c\r\n", "1", "#c"},
+		{"missing-separator", "", ""},
+	} {
+		if err := os.WriteFile(lastBufferPath("one"), []byte(test.text), 0600); err != nil {
+			t.Fatal(err)
+		}
+		network, name := getLastBuffer("one")
+		if network != test.network || name != test.name {
+			t.Errorf("%q restored as (%q, %q), want (%q, %q)", test.text, network, name, test.network, test.name)
+		}
+	}
+}

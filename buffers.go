@@ -138,7 +138,11 @@ func (app *App) openBuffer(network, name string) {
 	state.Network, state.Name = network, name
 	state.ClosedAt = time.Time{}
 	app.bufferStore.put(state)
-	if network == app.lastNetID && name == app.lastBuffer {
+	sameTarget := strings.EqualFold(name, app.lastBuffer)
+	if session := app.sessions[network]; session != nil {
+		sameTarget = session.Casemap(name) == session.Casemap(app.lastBuffer)
+	}
+	if network == app.lastNetID && sameTarget {
 		app.win.JumpBufferNetwork(network, name)
 		app.win.ScrollToBuffer()
 		app.lastNetID, app.lastBuffer = "", ""
