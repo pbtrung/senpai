@@ -303,6 +303,9 @@ func (bs *BufferList) HasOverlay() bool {
 
 func (bs *BufferList) To(i int) bool {
 	bs.overlay = nil
+	if len(bs.list) == 0 {
+		return false
+	}
 	if i == bs.current {
 		return false
 	}
@@ -336,11 +339,17 @@ func (bs *BufferList) FilterBuffers(enable bool, query string) {
 }
 
 func (bs *BufferList) Next() {
+	if len(bs.list) == 0 {
+		return
+	}
 	c := (bs.current + 1) % len(bs.list)
 	bs.To(c)
 }
 
 func (bs *BufferList) Previous() {
+	if len(bs.list) == 0 {
+		return
+	}
 	c := (bs.current - 1 + len(bs.list)) % len(bs.list)
 	bs.To(c)
 }
@@ -426,11 +435,13 @@ func (bs *BufferList) Remove(netID, title string) bool {
 	updated := bs.current == idx
 
 	bs.clearRead(idx)
-	bs.list = append(bs.list[:idx], bs.list[idx+1:]...)
+	copy(bs.list[idx:], bs.list[idx+1:])
+	bs.list[len(bs.list)-1] = buffer{}
+	bs.list = bs.list[:len(bs.list)-1]
 	if bs.current >= idx {
-		bs.current--
+		bs.current = max(0, bs.current-1)
 	}
-	if updated {
+	if updated && len(bs.list) > 0 {
 		// Force refresh current buffer
 		c := bs.current
 		bs.current = -1
@@ -450,13 +461,16 @@ func (bs *BufferList) RemoveNetwork(netID string) {
 			updated = true
 		}
 		bs.clearRead(idx)
-		bs.list = append(bs.list[:idx], bs.list[idx+1:]...)
+		copy(bs.list[idx:], bs.list[idx+1:])
+		bs.list[len(bs.list)-1] = buffer{}
+		bs.list = bs.list[:len(bs.list)-1]
 		if bs.current >= idx {
 			bs.current--
 		}
 		idx--
 	}
-	if updated {
+	bs.current = max(0, bs.current)
+	if updated && len(bs.list) > 0 {
 		// Force refresh current buffer
 		c := bs.current
 		bs.current = -1

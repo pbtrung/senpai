@@ -145,3 +145,53 @@ func TestRenderedHeight(t *testing.T) {
 	assertNewLines(t, "take cares", 5, 2) // |take |cares|
 	assertNewLines(t, "tak cares", 5, 2)  // |tak  |cares|
 }
+
+func TestRemoveFirstSelectedBuffer(t *testing.T) {
+	bs := BufferList{list: []buffer{
+		{title: "alice", pinned: true, lines: []Line{{Body: PlainString("private message")}}},
+		{netName: "home"},
+	}}
+	if !bs.Remove("", "alice") {
+		t.Fatal("first buffer was not removed")
+	}
+	if network, title := bs.Current(); network != "" || title != "" {
+		t.Fatalf("home was not selected after closing the first buffer: %q %q", network, title)
+	}
+	if tail := bs.list[:cap(bs.list)][1]; tail.title != "" || tail.lines != nil {
+		t.Fatal("removed buffer still referenced by the backing array")
+	}
+	bs.Remove("", "")
+	if bs.current != 0 || len(bs.list) != 0 || bs.To(0) {
+		t.Fatal("removing the final buffer left an invalid selection")
+	}
+	bs.Next()
+	bs.Previous()
+}
+
+func TestRemoveSelectedNetworkBeforeHome(t *testing.T) {
+	bs := BufferList{list: []buffer{
+		{netID: "1", title: "alice", pinned: true},
+		{netID: "1", title: "#c"},
+		{netName: "home"},
+	}}
+	bs.RemoveNetwork("1")
+	if len(bs.list) != 1 || bs.current != 0 {
+		t.Fatalf("network removal left invalid selection: index %d in %d buffers", bs.current, len(bs.list))
+	}
+	if network, title := bs.Current(); network != "" || title != "" {
+		t.Fatalf("remaining home was not selected: %q %q", network, title)
+	}
+}
+
+func TestRemovePreservesOtherSelection(t *testing.T) {
+	bs := BufferList{current: 2, list: []buffer{
+		{netID: "1", title: "alice"},
+		{netID: "1", title: "#c"},
+		{netName: "home"},
+	}}
+	bs.Remove("1", "alice")
+	bs.RemoveNetwork("1")
+	if network, title := bs.Current(); network != "" || title != "" || bs.current != 0 {
+		t.Fatal("removing buffers before the selection changed the current conversation")
+	}
+}
