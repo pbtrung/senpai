@@ -153,7 +153,7 @@ colors {
 |  prompt <color>
 :  color for ">"-prompt that appears in command mode
 |  unread <color>
-:  foreground color for unread buffer names in buffer lists
+:  foreground color for unread buffer names in buffer lists (defaults to teal, #008484)
 |  status [...]
 :  foreground color for status event lines (e.g. join, part, nick changes) in buffers, see table below
 |  nicks [...]

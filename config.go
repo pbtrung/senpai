@@ -161,7 +161,7 @@ func Defaults() Config {
 		Colors: ui.ConfigColors{
 			Status: ui.ColorDefault, // Overriden by UI later.
 			Prompt: ui.ColorDefault,
-			Unread: ui.ColorDefault,
+			Unread: vaxis.HexColor(0x008484),
 			Nicks: ui.ColorScheme{
 				Type:   ui.ColorSchemeBase,
 				Others: ui.ColorDefault,
