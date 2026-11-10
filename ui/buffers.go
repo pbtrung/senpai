@@ -375,18 +375,15 @@ func (bs *BufferList) PreviousUnread() {
 }
 
 func (bs *BufferList) Add(netID, netName, title string) (i int, added bool) {
+	if i, b := bs.at(netID, title); b != nil {
+		return i, false
+	}
 	for _, b := range bs.list {
 		if netName == "" && b.netID == netID {
 			netName = b.netName
 			break
 		}
 	}
-	if netName != "" {
-		if i, b := bs.at(netID, title); b != nil {
-			return i, false
-		}
-	}
-
 	i = 0
 	lTitle := strings.ToLower(title)
 	for bi, b := range bs.list {

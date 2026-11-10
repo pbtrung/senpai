@@ -3,6 +3,7 @@ package ui
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func assertSplitPoints(t *testing.T, body string, expected []point) {
@@ -193,5 +194,22 @@ func TestRemovePreservesOtherSelection(t *testing.T) {
 	bs.RemoveNetwork("1")
 	if network, title := bs.Current(); network != "" || title != "" || bs.current != 0 {
 		t.Fatal("removing buffers before the selection changed the current conversation")
+	}
+}
+
+func TestAddUnnamedBufferIsIdempotent(t *testing.T) {
+	bs := NewBufferList(&UI{})
+	index, added := bs.Add("1", "", "")
+	if !added {
+		t.Fatal("initial unnamed network was not added")
+	}
+	if got, added := bs.Add("1", "", ""); added || got != index || len(bs.list) != 1 {
+		t.Fatal("repeated unnamed network update duplicated the buffer")
+	}
+	index, _ = bs.Add("1", "", "Alice")
+	bs.list[index].read = time.Unix(123, 0)
+	read := bs.list[index].read
+	if got, added := bs.Add("1", "", "ALICE"); added || got != index || len(bs.list) != 2 || bs.list[got].read != read {
+		t.Fatal("reopening a query on an unnamed network duplicated it or lost its read marker")
 	}
 }
