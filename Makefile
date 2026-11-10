@@ -21,7 +21,7 @@ endif
 all: senpai doc
 
 senpai:
-	$(GO) build $(GOFLAGS) -ldflags "-X git.sr.ht/~delthas/senpai.version=$(VERSION)" ./cmd/senpai
+	$(GO) build $(GOFLAGS) -ldflags "-s -w -X git.sr.ht/~delthas/senpai.version=$(VERSION)" ./cmd/senpai
 
 ifeq (, $(shell which $(SCDOC) 2>/dev/null))
 $(warning "$(SCDOC) not found, skipping building documentation")

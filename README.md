@@ -21,6 +21,8 @@ make
 sudo make install
 ```
 
+`make` strips symbol tables and debug information from the executable.
+
 ## Usage
 
 Start senpai from your terminal:
