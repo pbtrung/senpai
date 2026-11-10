@@ -642,12 +642,9 @@ func commandDoMode(app *App, args []string) (err error) {
 func commandDoPart(app *App, args []string) (err error) {
 	netID, channel := app.win.CurrentBuffer()
 	s := app.sessions[netID]
-	if s == nil {
-		return errOffline
-	}
 	reason := ""
 	if 0 < len(args) {
-		if s.IsChannel(args[0]) {
+		if (s != nil && s.IsChannel(args[0])) || (s == nil && app.win.HasBuffer(netID, args[0])) {
 			channel = args[0]
 			if 1 < len(args) {
 				reason = args[1]

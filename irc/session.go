@@ -329,6 +329,12 @@ func (s *Session) IsChannel(name string) bool {
 	return strings.IndexAny(name, s.chantypes) == 0
 }
 
+// Joined reports whether we are currently joined to a channel.
+func (s *Session) Joined(channel string) bool {
+	_, ok := s.channels[s.Casemap(channel)]
+	return ok
+}
+
 func (s *Session) Casemap(name string) string {
 	return s.casemap(name)
 }

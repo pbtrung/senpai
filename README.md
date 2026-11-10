@@ -34,6 +34,9 @@ Once connected, join a channel with `/join #channel`, type a message to chat,
 and use `/help` to see available commands. Exit with `/quit`.
 
 Use `Ctrl+N` and `Ctrl+P` to switch between buffers, and `Tab` for completion.
+The conversation list and read markers are restored between runs. Each buffer
+keeps up to 2,000 messages in memory; message contents are fetched from the
+server and are not saved locally. Set `transient true` to disable saved state.
 
 To use a different configuration file:
 

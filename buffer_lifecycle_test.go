@@ -107,14 +107,33 @@ func TestBufferEntryLifecycle(t *testing.T) {
 	if !hasBuffer("#c") {
 		t.Fatal("kick removed the channel conversation")
 	}
+	for len(out) > 0 {
+		<-out
+	}
 	app.closeBuffer("", "#c", "")
 	if hasBuffer("#c") {
 		t.Fatal("explicit close retained a parted channel")
+	}
+	if len(out) > 0 {
+		t.Fatal("closing a channel after a kick sent a redundant PART")
 	}
 	states := app.BufferStates()
 	restored := &App{}
 	restored.RestoreBuffers(states)
 	if !restored.targetClosed("", "#c", time.Time{}) || restored.targetClosed("", "bob", time.Time{}) {
 		t.Fatal("snapshot lost the conversation's open or closed state")
+	}
+	delete(app.sessions, "")
+	app.messageBounds[boundKey{"", "alice"}] = bound{first: stamp}
+	app.monitor[""]["ALICE"] = struct{}{}
+	win.JumpBufferNetwork("", "bob")
+	if err := commandDoPart(app, []string{"alice"}); err != nil || hasBuffer("alice") {
+		t.Fatalf("could not close a named conversation while offline: %v", err)
+	}
+	if _, ok := app.messageBounds[boundKey{"", "alice"}]; ok || len(app.monitor[""]) != 1 {
+		t.Fatal("offline close retained stale history bounds or query monitors")
+	}
+	if err := commandDoPart(app, nil); err != nil || hasBuffer("bob") {
+		t.Fatalf("could not close the current conversation while offline: %v", err)
 	}
 }

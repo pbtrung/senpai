@@ -531,6 +531,11 @@ func (ui *UI) ReadMarker(netID, title string) time.Time {
 	return b.read
 }
 
+func (ui *UI) HasBuffer(netID, title string) bool {
+	_, b := ui.bs.at(netID, title)
+	return b != nil
+}
+
 func (ui *UI) JumpBuffer(sub string) bool {
 	subLower := strings.ToLower(sub)
 	for i, b := range ui.bs.list {

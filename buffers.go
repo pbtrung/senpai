@@ -159,13 +159,20 @@ func (app *App) closeBuffer(network, name string, reason string) {
 	})
 	if session := app.sessions[network]; session != nil {
 		if session.IsChannel(name) {
-			session.Part(name, reason)
+			if session.Joined(name) {
+				session.Part(name, reason)
+			}
 		} else {
 			session.MonitorRemove(name)
-			delete(app.monitor[network], name)
 		}
-		delete(app.messageBounds, boundKey{network, session.Casemap(name)})
 	}
+	casemap := app.bufferStore.network(network).casemap
+	for target := range app.monitor[network] {
+		if casemap(target) == casemap(name) {
+			delete(app.monitor[network], target)
+		}
+	}
+	delete(app.messageBounds, boundKey{network, casemap(name)})
 	app.win.RemoveBuffer(network, name)
 }
 

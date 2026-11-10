@@ -63,7 +63,7 @@ you.
 
 The user interface of senpai consists of several parts.
 
-On the left, the *buffer list*, shows joined channels. The special buffer *home*
+On the left, the *buffer list* shows channels and private conversations. The special buffer *home*
 is where server notices are shown. The list can be put on the bottom of the
 screen with a configuration option. Buffers can be closed with the mouse middle
 click, or the _part_ command.
@@ -200,7 +200,12 @@ _name_ is matched case-insensitively.  It can be one of the following:
 	Join the given channel.
 
 *PART* [channel] [reason]
-	Part the given channel, defaults to the current one if omitted.
+	Close the given channel or the current conversation if omitted, leaving
+	the channel if still joined. Conversations can also be closed while
+	disconnected.
+
+*QUERY* <nickname> [message]
+	Open a private conversation, optionally sending an initial message.
 
 *QUIT* [reason]
 	Quits senpai.
