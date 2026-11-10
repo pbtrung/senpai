@@ -42,6 +42,7 @@ func TestBufferEntryLifecycle(t *testing.T) {
 	app.cfg.Transient = true
 	stamp := time.Date(2026, 11, 9, 12, 0, 0, 0, time.UTC)
 	app.RestoreBuffers([]BufferState{
+		{Name: ui.Overlay, Read: stamp},
 		{Name: "alice", Read: stamp}, {Name: "bob", ClosedAt: stamp.Add(time.Minute)}, {Name: "#c"},
 	})
 	app.SwitchToBuffer("", "ALICE")
@@ -73,6 +74,9 @@ func TestBufferEntryLifecycle(t *testing.T) {
 			}
 			app.handleIRCEvent("", msg)
 		}
+	}
+	if hasBuffer(ui.Overlay) {
+		t.Fatal("restored the search overlay as a conversation")
 	}
 	recv(":srv CAP me ACK :soju.im/unread soju.im/bouncer-networks")
 	if got := app.restoreNetworkBuffers("", session); len(got) != 0 {

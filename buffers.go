@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"git.sr.ht/~delthas/senpai/irc"
+	"git.sr.ht/~delthas/senpai/ui"
 )
 
 // BufferState remembers a conversation, without storing its messages locally.
@@ -42,6 +43,10 @@ func (store *bufferStore) get(network, name string) BufferState {
 }
 
 func (store *bufferStore) put(state BufferState) {
+	// Older versions accidentally saved the search overlay as a conversation.
+	if state.Network == "" && strings.EqualFold(state.Name, ui.Overlay) {
+		return
+	}
 	if state.Name == "" || strings.ContainsAny(state.Name, " \r\n\x00,") {
 		return
 	}

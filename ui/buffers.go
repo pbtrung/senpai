@@ -773,6 +773,10 @@ func (bs *BufferList) SetRead(netID, title string, timestamp time.Time) {
 }
 
 func (bs *BufferList) UpdateRead() (netID, title string, timestamp time.Time) {
+	// Search results are temporary and have no server-side read marker.
+	if bs.HasOverlay() {
+		return "", "", time.Time{}
+	}
 	b := bs.cur()
 	var l *Line
 	bs.forEachLine(b, func(line *Line, y int) bool {

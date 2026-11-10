@@ -17,6 +17,8 @@ func TestBufferStoreRestoreAndClose(t *testing.T) {
 		{Network: "1", Name: "Bob", Read: stamp, ClosedAt: stamp.Add(time.Minute)},
 		{Name: "bad\r\nPRIVMSG"},
 		{Name: ""},
+		{Name: "/overlay", Read: stamp},
+		{Name: "/OVERLAY", ClosedAt: stamp},
 	})
 	app.bufferStore.put(BufferState{Network: "1", Name: "ALICE", Read: stamp.Add(-time.Hour)})
 	if got := app.bufferStore.get("1", "alice").Read; !got.Equal(stamp) {

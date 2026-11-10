@@ -6,6 +6,28 @@ import (
 	"time"
 )
 
+func TestSearchOverlayDoesNotUpdateReadMarker(t *testing.T) {
+	stamp := time.Date(2026, 11, 9, 12, 0, 0, 0, time.UTC)
+	bs := BufferList{list: []buffer{{netID: "1", title: "#c", lines: []Line{
+		{At: stamp, Readable: true},
+	}}}}
+	bs.OpenOverlay()
+	bs.overlay.lines = []Line{{At: stamp.Add(time.Hour), Readable: true}}
+	if network, title, at := bs.UpdateRead(); network != "" || title != "" || !at.IsZero() {
+		t.Fatalf("search results emitted a read marker: %q %q %v", network, title, at)
+	}
+	if !bs.list[0].read.IsZero() || !bs.overlay.read.IsZero() {
+		t.Fatal("search results advanced a read marker")
+	}
+	if _, _, ok := bs.Buffer(1); ok {
+		t.Fatal("search overlay appeared in the conversation list")
+	}
+	bs.CloseOverlay()
+	if network, title, at := bs.UpdateRead(); network != "1" || title != "#c" || !at.Equal(stamp) {
+		t.Fatalf("conversation read marker did not resume: %q %q %v", network, title, at)
+	}
+}
+
 func TestUnreadSnapshotAndReadMarkers(t *testing.T) {
 	bs := BufferList{list: []buffer{{title: "home"}, {netID: "1", title: "#c"}}, focused: true}
 	latest := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
