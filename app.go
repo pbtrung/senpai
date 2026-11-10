@@ -131,6 +131,7 @@ type App struct {
 	messageBounds map[boundKey]bound
 	lastNetID     string
 	lastBuffer    string
+	bufferStore   bufferStore
 
 	monitor map[string]map[string]struct{} // set of targets we want to monitor per netID, best-effort. netID->target->{}
 
@@ -333,6 +334,9 @@ func (app *App) eventLoop() {
 					if s != nil {
 						s.ReadSet(buffer, timestamp)
 					}
+					state := app.bufferStore.get(netID, buffer)
+					state.Network, state.Name, state.Read = netID, buffer, timestamp
+					app.bufferStore.put(state)
 				}
 			}
 			app.maybeRequestHistory()
@@ -810,12 +814,7 @@ func (app *App) handleMouseEvent(ev vaxis.Mouse) {
 						}
 					}
 				case 2:
-					s := app.sessions[netID]
-					if s != nil && s.IsChannel(target) {
-						s.Part(target, "")
-					} else {
-						app.win.RemoveBuffer(netID, target)
-					}
+					app.closeBuffer(netID, target, "")
 				}
 				if failed {
 					netID, buffer := app.win.CurrentBuffer()
@@ -838,12 +837,7 @@ func (app *App) handleMouseEvent(ev vaxis.Mouse) {
 			}
 			netID, channel, ok := app.win.Buffer(i)
 			if ok && channel != "" {
-				s := app.sessions[netID]
-				if s != nil && s.IsChannel(channel) {
-					s.Part(channel, "")
-				} else {
-					app.win.RemoveBuffer(netID, channel)
-				}
+				app.closeBuffer(netID, channel, "")
 			}
 		}
 		if ev.Button == vaxis.MouseRightButton {
@@ -1477,15 +1471,19 @@ func (app *App) maybeRequestHistory() {
 	if app.messageBounds[bk].complete {
 		return
 	}
+	limit := min(200, app.win.BufferHistoryCapacity(netID, buffer))
+	if limit == 0 {
+		return
+	}
 	_, h := app.win.Size()
 	if l := app.win.LinesAboveOffset(); l < h*2 && buffer != "" {
 		if bound, ok := app.messageBounds[bk]; ok {
 			s.NewHistoryRequest(buffer).
-				WithLimit(200).
+				WithLimit(limit).
 				Before(bound.first)
 		} else {
 			s.NewHistoryRequest(buffer).
-				WithLimit(200).
+				WithLimit(limit).
 				Latest()
 		}
 	}
@@ -1609,7 +1607,14 @@ func (app *App) handleIRCEvent(netID string, ev interface{}) {
 	// Mutate UI state
 	switch ev := ev.(type) {
 	case irc.RegisteredEvent:
-		for _, channel := range app.cfg.Channels {
+		channels := append(app.restoreNetworkBuffers(netID, s), app.cfg.Channels...)
+		joined := make(map[string]bool)
+		for _, channel := range channels {
+			key := s.Casemap(channel)
+			if joined[key] {
+				continue
+			}
+			joined[key] = true
 			// TODO: group JOIN messages
 			// TODO: support autojoining channels with keys
 			s.Join(channel, "")
@@ -1741,13 +1746,7 @@ func (app *App) handleIRCEvent(netID string, ev interface{}) {
 			app.win.SetTopic(netID, ev.Channel, topic)
 		}
 
-		// Restore last buffer
-		if netID == app.lastNetID && ev.Channel == app.lastBuffer {
-			app.win.JumpBufferNetwork(app.lastNetID, app.lastBuffer)
-			app.win.ScrollToBuffer()
-			app.lastNetID = ""
-			app.lastBuffer = ""
-		}
+		app.openBuffer(netID, ev.Channel)
 	case irc.UserJoinEvent:
 		if !app.cfg.StatusEnabled {
 			break
@@ -1755,8 +1754,15 @@ func (app *App) handleIRCEvent(netID string, ev interface{}) {
 		line := app.formatEvent(ev)
 		app.win.AddLine(netID, ev.Channel, line)
 	case irc.SelfPartEvent:
-		app.win.RemoveBuffer(netID, ev.Channel)
-		delete(app.messageBounds, boundKey{netID, s.Casemap(ev.Channel)})
+		// Keep the conversation after a remote PART or KICK. Explicit closes
+		// have already removed it, along with its saved open state.
+		body := "You left the channel"
+		if msg.Command == "KICK" {
+			body = "You were kicked from the channel"
+		}
+		app.win.AddLine(netID, ev.Channel, ui.Line{
+			At: msg.TimeOrNow(), Head: ui.PlainString("--"), Body: ui.PlainString(body),
+		})
 	case irc.UserPartEvent:
 		if !app.cfg.StatusEnabled {
 			break
@@ -1838,10 +1844,18 @@ func (app *App) handleIRCEvent(netID string, ev interface{}) {
 	case irc.HistoryTargetsEvent:
 		if s.HasCapability("soju.im/unread") {
 			for target, last := range ev.Targets {
+				state := ev.Unread[target]
 				if !s.IsChannel(target) {
+					if app.targetClosed(netID, target, last) {
+						continue
+					}
+					// A mention identifies a private conversation. Notice-only
+					// targets (e.g. services) should not create empty entries.
+					if saved := app.bufferStore.get(netID, target); !state.Mention && saved.Name == "" {
+						continue
+					}
 					app.addUserBuffer(netID, target, time.Time{})
 				}
-				state := ev.Unread[target]
 				app.win.SetUnread(netID, target, last, state.Unread, state.Mention)
 			}
 			break
@@ -1863,6 +1877,9 @@ func (app *App) handleIRCEvent(netID string, ev interface{}) {
 		}
 		for _, target := range targets {
 			if s.IsChannel(target.name) {
+				continue
+			}
+			if app.targetClosed(netID, target.name, target.last) {
 				continue
 			}
 			// CHATHISTORY BEFORE excludes its bound, so add 1ms
@@ -1935,10 +1952,15 @@ func (app *App) handleIRCEvent(netID string, ev interface{}) {
 		app.win.AddLines("", ui.Overlay, lines, nil)
 	case irc.ReadEvent:
 		app.win.SetRead(netID, ev.Target, ev.Timestamp)
+		state := app.bufferStore.get(netID, ev.Target)
+		if state.Name != "" {
+			state.Read = ev.Timestamp
+			app.bufferStore.put(state)
+		}
 	case irc.MetadataChangeEvent:
 		app.win.SetPinned(netID, ev.Target, ev.Pinned)
 		app.win.SetMuted(netID, ev.Target, ev.Muted)
-		if ev.Pinned && !s.IsChannel(ev.Target) {
+		if ev.Pinned && !s.IsChannel(ev.Target) && !app.targetClosed(netID, ev.Target, time.Time{}) {
 			app.addUserBuffer(netID, ev.Target, time.Time{})
 		}
 	case irc.BouncerNetworkEvent:
@@ -1971,6 +1993,7 @@ func (app *App) handleIRCEvent(netID string, ev interface{}) {
 				delete(app.monitor, ev.ID)
 			}
 			app.win.RemoveNetworkBuffers(ev.ID)
+			delete(app.bufferStore, ev.ID)
 		}
 	case irc.BouncerNetworkListEvent:
 		for _, ev := range ev {
@@ -2704,6 +2727,7 @@ func (app *App) addUserBuffer(netID, buffer string, t time.Time) (i int, added b
 	}
 	i = app.win.SetMuted(netID, buffer, s.MutedGet(buffer))
 	i = app.win.SetPinned(netID, buffer, s.PinnedGet(buffer))
+	app.openBuffer(netID, buffer)
 	app.monitor[netID][buffer] = struct{}{}
 	s.MonitorAdd(buffer)
 	s.ReadGet(buffer)

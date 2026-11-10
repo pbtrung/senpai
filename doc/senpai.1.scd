@@ -68,6 +68,16 @@ is where server notices are shown. The list can be put on the bottom of the
 screen with a configuration option. Buffers can be closed with the mouse middle
 click, or the _part_ command.
 
+The conversation list and read markers are saved between runs, unless
+*transient* is enabled. Closing a conversation keeps older history from
+reopening it; a new message or an explicit _query_ can open it again. Channels
+stay in the list after a kick or a part from another client. Use _join_ to
+rejoin, or _part_ to close the entry.
+
+Each buffer keeps at most 2000 messages in memory. The oldest messages are
+discarded as new ones arrive, and scrolling loads history only up to this
+limit. Message contents are not saved locally.
+
 On the right, the *member list*, shows members joined to the current channel.
 
 On the bottom, the *input field* is where you type in messages or commands

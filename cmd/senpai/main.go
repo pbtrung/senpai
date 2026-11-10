@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -210,6 +211,7 @@ func main() {
 
 	cfgHash := configPathHash(configPath)
 	if !cfg.Transient {
+		app.RestoreBuffers(getBuffers(cfgHash))
 		lastNetID, lastBuffer := getLastBuffer(cfgHash)
 		app.SwitchToBuffer(lastNetID, lastBuffer)
 		app.SetLastClose(getLastStamp(cfgHash))
@@ -234,6 +236,7 @@ func main() {
 	app.Run()
 	app.Close()
 	if !cfg.Transient {
+		writeBuffers(app.BufferStates(), cfgHash)
 		writeLastBuffer(app, cfgHash)
 		writeLastStamp(app, cfgHash)
 	}
@@ -303,6 +306,55 @@ func lastBufferPath(hash string) string {
 		name = "lastbuffer-" + hash + ".txt"
 	}
 	return path.Join(cachePath(), name)
+}
+
+func buffersPath(hash string) string {
+	return path.Join(cachePath(), "buffers-"+hash+".json")
+}
+
+func getBuffers(hash string) []senpai.BufferState {
+	p := buffersPath(hash)
+	data, err := os.ReadFile(p)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	var states []senpai.BufferState
+	if err == nil {
+		err = json.Unmarshal(data, &states)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to read conversation list at %q: %s\n", p, err)
+		return nil
+	}
+	return states
+}
+
+func writeBuffers(states []senpai.BufferState, hash string) {
+	p := buffersPath(hash)
+	if err := saveBuffers(p, states); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to write conversation list at %q: %s\n", p, err)
+	}
+}
+
+func saveBuffers(p string, states []senpai.BufferState) error {
+	data, err := json.Marshal(states)
+	if err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(filepath.Dir(p), ".buffers-*.json")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	_, err = f.Write(data)
+	closeErr := f.Close()
+	if err != nil {
+		return err
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	return os.Rename(f.Name(), p)
 }
 
 func getLastBuffer(hash string) (netID, buffer string) {

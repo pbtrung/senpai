@@ -14,6 +14,9 @@ import (
 
 const Overlay = "/overlay"
 
+// MaxBufferLines bounds the in-memory history of each conversation.
+const MaxBufferLines = 2000
+
 func IsSplitRune(r rune) bool {
 	return r == ' ' || r == '\t'
 }
@@ -554,6 +557,33 @@ func (bs *BufferList) AddLine(netID, title string, line Line) {
 			b.unreadSkip = optionalFalse
 		}
 	}
+	bs.trimLines(b)
+}
+
+func (bs *BufferList) trimLines(b *buffer) {
+	if len(b.lines) <= MaxBufferLines {
+		return
+	}
+	// Preserve unread state for messages which can be fetched again later.
+	for _, line := range b.lines[:len(b.lines)-MaxBufferLines] {
+		if line.Readable && line.At.After(b.read) && line.Notify != NotifyNone {
+			if line.At.After(b.unreadLatest) {
+				b.unreadLatest = line.At
+			}
+			b.snapshotMention = b.snapshotMention || line.Notify == NotifyHighlight
+		}
+	}
+	n := copy(b.lines, b.lines[len(b.lines)-MaxBufferLines:])
+	clear(b.lines[n:])
+	b.lines = b.lines[:n]
+	b.isAtTop = false
+	if b.scrollAmt > 0 {
+		height := 0
+		for i := range b.lines {
+			height += len(b.lines[i].NewLines(bs.ui.vx, bs.textWidth)) + 1
+		}
+		b.scrollAmt = min(b.scrollAmt, max(0, height-bs.tlHeight))
+	}
 }
 
 func (bs *BufferList) AddLines(netID, title string, before, after []Line) {
@@ -582,6 +612,7 @@ func (bs *BufferList) AddLines(netID, title string, before, after []Line) {
 		}
 	}
 	b.lines = lines
+	bs.trimLines(b)
 	if (!bs.focused || b != bs.cur()) && !b.read.IsZero() {
 		bs.recountUnread(b)
 	}

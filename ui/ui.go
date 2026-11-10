@@ -515,6 +515,22 @@ func (ui *UI) AddLines(netID, buffer string, before, after []Line) {
 	ui.bs.AddLines(netID, buffer, before, after)
 }
 
+func (ui *UI) BufferHistoryCapacity(netID, title string) int {
+	_, b := ui.bs.at(netID, title)
+	if b == nil {
+		return 0
+	}
+	return max(0, MaxBufferLines-len(b.lines))
+}
+
+func (ui *UI) ReadMarker(netID, title string) time.Time {
+	_, b := ui.bs.at(netID, title)
+	if b == nil {
+		return time.Time{}
+	}
+	return b.read
+}
+
 func (ui *UI) JumpBuffer(sub string) bool {
 	subLower := strings.ToLower(sub)
 	for i, b := range ui.bs.list {

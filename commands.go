@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"go.rockorager.dev/vaxis"
 	"github.com/delthas/go-libnp"
+	"go.rockorager.dev/vaxis"
 
 	"git.sr.ht/~delthas/senpai/irc"
 	"git.sr.ht/~delthas/senpai/ui"
@@ -661,11 +661,7 @@ func commandDoPart(app *App, args []string) (err error) {
 		return fmt.Errorf("cannot part this buffer")
 	}
 
-	if s.IsChannel(channel) {
-		s.Part(channel, reason)
-	} else {
-		app.win.RemoveBuffer(netID, channel)
-	}
+	app.closeBuffer(netID, channel, reason)
 	return nil
 }
 
