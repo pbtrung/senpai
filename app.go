@@ -155,7 +155,12 @@ type App struct {
 	shownBouncerNotice bool
 	shownPasteHint     bool
 
-	closing atomic.Bool
+	closing     atomic.Bool
+	stop        chan struct{}
+	eventMu     sync.RWMutex
+	runMu       sync.Mutex
+	running     bool
+	cleanupOnce sync.Once
 
 	harper *harperState
 }
@@ -181,6 +186,7 @@ func NewApp(cfg Config) (app *App, err error) {
 		pendingCompletions: make(map[string][]pendingCompletion),
 		sessions:           map[string]*irc.Session{},
 		events:             make(chan event, eventChanSize),
+		stop:               make(chan struct{}),
 		cfg:                cfg,
 		shortcuts:          make(map[keyMatch][]string),
 		messageBounds:      map[boundKey]bound{},
@@ -244,28 +250,42 @@ func NewApp(cfg Config) (app *App, err error) {
 	return
 }
 
+// Close requests shutdown and is safe to call repeatedly from another goroutine.
+// Run owns session and subprocess cleanup until its event loop has stopped.
 func (app *App) Close() {
-	app.win.Exit()       // tell all instances of app.ircLoop to stop when possible
-	app.postEvent(event{ // tell app.eventLoop to stop
-		src:     "*",
-		content: nil,
-	})
-	for _, session := range app.sessions {
-		session.Close()
+	app.runMu.Lock()
+	defer app.runMu.Unlock()
+	if app.closing.CompareAndSwap(false, true) {
+		app.win.Exit()
+		close(app.stop)
 	}
-	ui.DBusStop()
-	app.harperClose()
-	app.closing.Store(true)
-	go func() {
-		// drain remaining events
+	if !app.running {
+		app.cleanup()
+	}
+}
+
+func (app *App) cleanup() {
+	app.cleanupOnce.Do(func() {
+		// Wait for canceled producers before draining unhandled session arrivals.
+		app.eventMu.Lock()
+		defer app.eventMu.Unlock()
 		for {
 			select {
-			case <-app.events:
+			case ev := <-app.events:
+				if session, ok := ev.content.(*irc.Session); ok {
+					session.Close()
+				}
 			default:
+				for _, session := range app.sessions {
+					session.Close()
+				}
+				ui.DBusStop()
+				app.harperClose()
+				app.win.Close()
 				return
 			}
 		}
-	}()
+	})
 }
 
 func (app *App) SwitchToBuffer(netID, buffer string) {
@@ -274,6 +294,21 @@ func (app *App) SwitchToBuffer(netID, buffer string) {
 }
 
 func (app *App) Run() {
+	app.runMu.Lock()
+	if app.closing.Load() || app.running {
+		app.runMu.Unlock()
+		return
+	}
+	app.running = true
+	app.runMu.Unlock()
+	defer func() {
+		app.Close()
+		app.cleanup()
+		app.runMu.Lock()
+		app.running = false
+		app.runMu.Unlock()
+	}()
+
 	if app.lastCloseTime.IsZero() {
 		app.lastCloseTime = time.Now()
 	}
@@ -303,10 +338,13 @@ func (app *App) SetLastClose(t time.Time) {
 // eventLoop retrieves events (in batches) from the event channel and handle
 // them, then draws the interface after each batch is handled.
 func (app *App) eventLoop() {
-	defer app.win.Close()
-
 	for !app.win.ShouldExit() {
-		ev := <-app.events
+		var ev event
+		select {
+		case <-app.stop:
+			return
+		case ev = <-app.events:
+		}
 		if !app.handleEvent(ev) {
 			return
 		}
@@ -314,10 +352,14 @@ func (app *App) eventLoop() {
 	outer:
 		for {
 			select {
+			case <-app.stop:
+				deadline.Stop()
+				return
 			case <-deadline.C:
 				break outer
 			case ev := <-app.events:
 				if !app.handleEvent(ev) {
+					deadline.Stop()
 					return
 				}
 			default:
@@ -364,11 +406,18 @@ func (app *App) eventLoop() {
 	}
 }
 
-func (app *App) postEvent(ev event) {
+func (app *App) postEvent(ev event) bool {
+	app.eventMu.RLock()
+	defer app.eventMu.RUnlock()
 	if app.closing.Load() {
-		return
+		return false
 	}
-	app.events <- ev
+	select {
+	case app.events <- ev:
+		return true
+	case <-app.stop:
+		return false
+	}
 }
 
 func (app *App) handleEvent(ev event) bool {
@@ -473,10 +522,13 @@ func (app *App) ircLoop(netID string) {
 			out = app.debugOutputMessages(netID, out)
 		}
 		session := irc.NewSession(out, params)
-		app.postEvent(event{
-			src:     netID,
-			content: session,
-		})
+		if !app.postEvent(event{
+			src: netID, content: session,
+		}) {
+			session.Close()
+			conn.Close()
+			return
+		}
 		go func() {
 			for stop := range session.TypingStops() {
 				app.postEvent(event{
@@ -1612,7 +1664,8 @@ func (app *App) handleIRCEvent(netID string, ev interface{}) {
 			}
 			app.win.AsyncCompletions(c.id, r)
 			copy(cs[i:], cs[i+1:])
-			app.pendingCompletions[netID] = app.pendingCompletions[netID][:len(cs)-1]
+			cs = cs[:len(cs)-1]
+			app.pendingCompletions[netID] = cs
 			i--
 			if eat {
 				return

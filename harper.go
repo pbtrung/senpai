@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"unicode/utf16"
 
 	"git.sr.ht/~delthas/senpai/events"
@@ -132,11 +133,13 @@ type lspDiagnosticsParams struct {
 }
 
 type harperState struct {
-	cmd    *exec.Cmd
-	stdin  io.WriteCloser
-	stdout *bufio.Reader
-	writes chan []byte
-	textCh chan string
+	cmd      *exec.Cmd
+	stdin    io.WriteCloser
+	stdout   *bufio.Reader
+	writes   chan []byte
+	textCh   chan string
+	done     chan struct{}
+	stopOnce sync.Once
 
 	reqID    int
 	ver      int
@@ -171,6 +174,7 @@ func (app *App) harperInit() {
 	if err != nil {
 		stdin.Close()
 		cmd.Process.Kill()
+		cmd.Wait()
 		return
 	}
 	dictFile.Close()
@@ -181,9 +185,11 @@ func (app *App) harperInit() {
 		stdout:   bufio.NewReader(stdout),
 		writes:   make(chan []byte, 64),
 		textCh:   make(chan string, 1),
+		done:     make(chan struct{}),
 		dictPath: dictFile.Name(),
 	}
 	go h.writeLoop()
+	go func() { cmd.Wait(); h.stop() }()
 
 	if err := h.sendRequest("initialize", json.RawMessage(`{
 		"capabilities": {
@@ -194,12 +200,12 @@ func (app *App) harperInit() {
 		"rootUri": null,
 		"processId": null
 	}`)); err != nil {
-		cmd.Process.Kill()
+		h.stop()
 		return
 	}
 
 	if err := h.sendNotification("initialized", json.RawMessage(`{}`)); err != nil {
-		cmd.Process.Kill()
+		h.stop()
 		return
 	}
 
@@ -209,6 +215,7 @@ func (app *App) harperInit() {
 
 func (app *App) harperLoop() {
 	h := app.harper
+	defer h.stop()
 	opened := false
 	for {
 		msg, err := h.readMessage()
@@ -299,13 +306,24 @@ func (app *App) updateHarperDict() {
 }
 
 func (app *App) harperClose() {
-	if app.harper == nil {
-		return
+	if app.harper != nil {
+		app.harper.stop()
 	}
-	os.Remove(app.harper.dictPath)
-	app.harper.sendNotification("shutdown", json.RawMessage(`null`))
-	close(app.harper.writes)
-	app.harper.cmd.Process.Kill()
+}
+
+func (h *harperState) stop() {
+	h.stopOnce.Do(func() {
+		close(h.done)
+		if h.stdin != nil {
+			h.stdin.Close()
+		}
+		if h.cmd != nil && h.cmd.Process != nil {
+			h.cmd.Process.Kill()
+		}
+		if h.dictPath != "" {
+			os.Remove(h.dictPath)
+		}
+	})
 }
 
 func (h *harperState) sendChange(text string) {
@@ -313,7 +331,10 @@ func (h *harperState) sendChange(text string) {
 	case <-h.textCh:
 	default:
 	}
-	h.textCh <- text
+	select {
+	case h.textCh <- text:
+	case <-h.done:
+	}
 }
 
 func (h *harperState) sendRequest(method string, params json.RawMessage) error {
@@ -347,17 +368,21 @@ func (h *harperState) sendNotification(method string, params json.RawMessage) er
 
 func (h *harperState) writeMessage(msg []byte) error {
 	header := fmt.Sprintf("Content-Length: %d\r\n\r\n", len(msg))
-	h.writes <- append([]byte(header), msg...)
-	return nil
+	select {
+	case <-h.done:
+		return io.ErrClosedPipe
+	case h.writes <- append([]byte(header), msg...):
+		return nil
+	}
 }
 
 func (h *harperState) writeLoop() {
+	defer h.stop()
 	for {
 		select {
-		case msg, ok := <-h.writes:
-			if !ok {
-				return
-			}
+		case <-h.done:
+			return
+		case msg := <-h.writes:
 
 			if _, err := h.stdin.Write(msg); err != nil {
 				return
@@ -383,16 +408,6 @@ func (h *harperState) writeLoop() {
 			if _, err := h.stdin.Write(append([]byte(header), msg...)); err != nil {
 				return
 			}
-			// Wait for the config response before accepting more text,
-			// so we throttle to harper's processing speed.
-			resp, ok := <-h.writes
-			if !ok {
-				return
-			}
-
-			if _, err := h.stdin.Write(resp); err != nil {
-				return
-			}
 		}
 	}
 }
@@ -415,8 +430,8 @@ func (h *harperState) readMessage() ([]byte, error) {
 			contentLength, _ = strconv.Atoi(line[16:])
 		}
 	}
-	if contentLength == 0 {
-		return nil, fmt.Errorf("missing content length")
+	if contentLength <= 0 || contentLength > 4<<20 {
+		return nil, fmt.Errorf("invalid content length: %d", contentLength)
 	}
 	body := make([]byte, contentLength)
 	if _, err := io.ReadFull(h.stdout, body); err != nil {
