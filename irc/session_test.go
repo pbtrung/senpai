@@ -1,6 +1,7 @@
 package irc
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -245,5 +246,43 @@ func TestVirtualRawMessageTags(t *testing.T) {
 	parsed, err := ParseMessage(m.String())
 	if err != nil || parsed.Command != "PRIVMSG" || parsed.Tags[NetworkTag] != "1" || parsed.Tags["+draft/reply"] != "message-id" {
 		t.Fatalf("raw tags lost during multiplex routing: %#v (%v)", parsed, err)
+	}
+}
+
+func TestShortNumericReplies(t *testing.T) {
+	s, _ := testSession(t)
+	for n := 0; n <= 999; n++ {
+		for _, params := range [][]string{nil, {"alice"}} {
+			msg := NewMessage(fmt.Sprintf("%03d", n), params...)
+			if _, err := s.HandleMessage(msg); err == nil {
+				t.Errorf("accepted short numeric %s with %d parameters", msg.Command, len(params))
+			}
+		}
+	}
+}
+
+func TestMembershipChangesAreIdempotent(t *testing.T) {
+	s, _ := testSession(t)
+	handleLine(t, s, ":alice!u@h JOIN #c")
+	handleLine(t, s, ":bob!u@h JOIN #c")
+	for _, mode := range []string{"+o", "+o", "-v"} {
+		handleLine(t, s, ":op MODE #c "+mode+" bob")
+	}
+	c := s.channels[s.Casemap("#c")]
+	if got := c.Members[s.users[s.Casemap("bob")]].Membership; got != "@" {
+		t.Fatalf("duplicate or unrelated mode damaged membership: %q", got)
+	}
+}
+
+func TestInvalidLinkHopCount(t *testing.T) {
+	for _, hops := range []string{"-1", "256", "9223372036854775807"} {
+		s, _ := testSession(t)
+		msg, err := ParseMessage(":server 364 alice remote local :" + hops + " description")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.HandleMessage(msg); err == nil {
+			t.Errorf("accepted hop count %s", hops)
+		}
 	}
 }

@@ -279,6 +279,10 @@ func ParseMessage(line string) (msg Message, err error) {
 
 	msg.Params = make([]string, 0, 15)
 	for line != "" {
+		line = strings.TrimLeft(line, " ")
+		if line == "" {
+			break
+		}
 		if line[0] == ':' {
 			msg.Params = append(msg.Params, line[1:])
 			break
@@ -407,6 +411,9 @@ const (
 
 // ReplySeverity returns the severity of a server reply.
 func ReplySeverity(reply string) Severity {
+	if len(reply) != 3 {
+		return SeverityNote
+	}
 	switch reply[0] {
 	case '4', '5':
 		if reply == "422" {

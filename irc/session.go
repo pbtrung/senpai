@@ -895,6 +895,11 @@ func (s *Session) handleRegistered(msg Message) (Event, error) {
 }
 
 func (s *Session) handleMessageRegistered(msg Message, playback bool) (Event, error) {
+	// Every numeric reply has a recipient and reply data. Validate before
+	// dispatching to handlers which index those fields directly.
+	if msg.IsReply() && len(msg.Params) < 2 {
+		return nil, msg.errNotEnoughParams(2)
+	}
 	switch msg.Command {
 	case "AUTHENTICATE":
 		if s.auth == nil {
@@ -1403,16 +1408,18 @@ func (s *Session) handleMessageRegistered(msg Message, playback bool) (Event, er
 				if !ok {
 					continue
 				}
-				var newMembership []byte
+				newMembership := []byte(m.Membership)
 				if change.Enable {
-					newMembership = append([]byte(m.Membership), s.prefixSymbols[i])
+					if strings.ContainsRune(m.Membership, rune(s.prefixSymbols[i])) {
+						continue
+					}
+					newMembership = append(newMembership, s.prefixSymbols[i])
 					sort.Slice(newMembership, func(i, j int) bool {
 						i = strings.IndexByte(s.prefixSymbols, newMembership[i])
 						j = strings.IndexByte(s.prefixSymbols, newMembership[j])
 						return i < j
 					})
 				} else if j := strings.IndexByte(m.Membership, s.prefixSymbols[i]); j >= 0 {
-					newMembership = []byte(m.Membership)
 					newMembership = append(newMembership[:j], newMembership[j+1:]...)
 				}
 				m.Membership = string(newMembership)
@@ -2080,6 +2087,9 @@ func (s *Session) handleMessageRegistered(msg Message, playback bool) (Event, er
 		var count int
 		if c, err := strconv.Atoi(hop); err == nil {
 			count = c
+		}
+		if count < 0 || count > 255 {
+			return nil, fmt.Errorf("invalid server hop count: %q", hop)
 		}
 		return InfoEvent{
 			Prefix:  "Link",

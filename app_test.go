@@ -1,7 +1,9 @@
 package senpai
 
 import (
+	"git.sr.ht/~delthas/senpai/ui"
 	"testing"
+	"time"
 
 	"git.sr.ht/~delthas/senpai/irc"
 )
@@ -34,4 +36,24 @@ func TestMultiplexDisconnect(t *testing.T) {
 	}
 	// A late UI action must not send on the now-closed physical output channel.
 	child.PrivMsg("#c", "late message")
+}
+
+func TestBoundsIncludeFirstAndOutOfOrderMessages(t *testing.T) {
+	stamp := time.Date(2026, 11, 9, 12, 0, 0, 0, time.UTC)
+	var b bound
+	first := ui.Line{At: stamp, Body: ui.PlainString("first")}
+	b.Update(&first)
+	if !b.first.Equal(stamp) || !b.last.Equal(stamp) || b.Compare(&first) != 0 {
+		t.Fatalf("first message excluded from bounds: %#v", b)
+	}
+	older := ui.Line{At: stamp.Add(-time.Hour), Body: ui.PlainString("older")}
+	b.Update(&older)
+	if b.Compare(&first) != 0 || b.Compare(&older) != 0 {
+		t.Fatal("out-of-order message damaged bounds")
+	}
+	newer := ui.Line{At: stamp.Add(time.Hour), Body: ui.PlainString("newer")}
+	b.Update(&newer)
+	if b.Compare(&newer) != 0 || !b.last.Equal(newer.At) {
+		t.Fatal("new message excluded from upper bound")
+	}
 }

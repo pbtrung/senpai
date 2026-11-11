@@ -81,7 +81,8 @@ func (b *bound) Update(line *ui.Line) {
 	if b.first.IsZero() || at.Before(b.first) {
 		b.first = at
 		b.firstMessage = line.Body.String()
-	} else if b.last.IsZero() || at.After(b.last) {
+	}
+	if b.last.IsZero() || at.After(b.last) {
 		b.last = at
 		b.lastMessage = line.Body.String()
 	}
