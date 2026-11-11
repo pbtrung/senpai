@@ -1278,6 +1278,10 @@ func (app *App) fetchImage(link string) (image.Image, error) {
 		if err != nil {
 			return nil, err
 		}
+		if res.StatusCode != http.StatusOK && res.StatusCode != http.StatusPartialContent {
+			res.Body.Close()
+			return nil, fmt.Errorf("unexpected status code: %d", res.StatusCode)
+		}
 		b, err := io.ReadAll(io.LimitReader(res.Body, previewSize))
 		res.Body.Close()
 		if err != nil {
@@ -1291,7 +1295,11 @@ func (app *App) fetchImage(link string) (image.Image, error) {
 		if len(m) < 2 {
 			return nil, fmt.Errorf("image embed not found")
 		}
-		link = html.UnescapeString(string(m[1]))
+		embed, err := url.Parse(html.UnescapeString(string(m[1])))
+		if err != nil {
+			return nil, err
+		}
+		link = res.Request.URL.ResolveReference(embed).String()
 	}
 	cGet := http.Client{
 		Timeout: 5 * time.Second,
@@ -1305,8 +1313,11 @@ func (app *App) fetchImage(link string) (image.Image, error) {
 	if err != nil {
 		return nil, err
 	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("unexpected status code: %d", res.StatusCode)
+	}
 	img, _, err := app.win.DecodeImage(res.Body)
-	res.Body.Close()
 	if err != nil {
 		return nil, err
 	}
@@ -1404,6 +1415,7 @@ func (app *App) upload(url string, r io.Reader, size int64, filename, mimetype s
 	if err != nil {
 		return "", fmt.Errorf("uploading: %v", err)
 	}
+	defer res.Body.Close()
 	if res.StatusCode == http.StatusRequestEntityTooLarge {
 		var maxSize int64
 		for _, entry := range strings.Split(res.Header.Get("Upload-Limit"), ",") {

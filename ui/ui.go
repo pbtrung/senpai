@@ -804,6 +804,9 @@ func (ui *UI) ShowImage(img image.Image) bool {
 		return true
 	}
 
+	// Terminal dimensions belong to the UI goroutine; image decoding runs in
+	// the background and must not inspect them while a resize is in progress.
+	img = ui.maybeResizeImage(img, 0)
 	vi, err := ui.vx.NewImage(img)
 	if err != nil {
 		return false
@@ -1069,17 +1072,28 @@ func (ui *UI) drawVerticalMemberList(vx *Vaxis, x0, y0, width, height int, b *bu
 }
 
 func (ui *UI) DecodeImage(r io.Reader) (image.Image, string, error) {
-	var b bytes.Buffer
-	tr := io.TeeReader(io.LimitReader(r, 1<<20), &b)
-	o := exifOrientation(tr)
-	r = io.MultiReader(&b, r)
-
-	img, format, err := image.Decode(r)
+	const maxImageBytes = 20 << 20
+	const maxImagePixels = 32 << 20
+	data, err := io.ReadAll(io.LimitReader(r, maxImageBytes+1))
+	if err != nil {
+		return nil, "", err
+	}
+	if len(data) > maxImageBytes {
+		return nil, "", fmt.Errorf("image exceeds %d byte limit", maxImageBytes)
+	}
+	cfg, format, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return nil, format, err
+	}
+	if cfg.Width <= 0 || cfg.Height <= 0 || cfg.Width > maxImagePixels/cfg.Height {
+		return nil, format, fmt.Errorf("image dimensions exceed %d pixel limit", maxImagePixels)
+	}
+	o := exifOrientation(bytes.NewReader(data))
+	img, format, err := image.Decode(bytes.NewReader(data))
 	if err != nil {
 		return img, format, err
 	}
 
-	img = ui.maybeResizeImage(img, o)
 	switch o {
 	case 3:
 		img = imaging.Rotate180(img)
@@ -1107,8 +1121,8 @@ func (ui *UI) maybeResizeImage(img image.Image, exifOrientation int) image.Image
 	case 6, 8:
 		wp, hp = hp, wp
 	}
-	cellPixW := ui.vx.xPixel / w
-	cellPixH := ui.vx.yPixel / h
+	cellPixW := max(1, ui.vx.xPixel/w)
+	cellPixH := max(1, ui.vx.yPixel/h)
 	columns := (wp + cellPixW - 1) / cellPixW
 	lines := (hp + cellPixH - 1) / cellPixH
 	if columns <= w && lines <= h {
@@ -1116,16 +1130,9 @@ func (ui *UI) maybeResizeImage(img image.Image, exifOrientation int) image.Image
 	}
 	sfX := float64(w) / float64(columns)
 	sfY := float64(h) / float64(lines)
-	nwp := wp
-	nhp := hp
-	switch {
-	case sfX < sfY:
-		nwp = int(sfX * float64(wp))
-		nhp = int(sfX * float64(hp))
-	case sfX > sfY:
-		nwp = int(sfY * float64(wp))
-		nhp = int(sfY * float64(hp))
-	}
+	sf := min(sfX, sfY)
+	nwp := max(1, int(sf*float64(wp)))
+	nhp := max(1, int(sf*float64(hp)))
 	switch exifOrientation {
 	case 6, 8:
 		nwp, nhp = nhp, nwp
