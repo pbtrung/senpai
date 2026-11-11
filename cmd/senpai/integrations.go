@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"time"
 
 	"git.sr.ht/~delthas/senpai/varlinkservice"
 	"github.com/emersion/go-varlink"
@@ -18,22 +19,27 @@ func sendOpenLink(socketDir string, link string) (ok bool, err error) {
 	if err != nil {
 		return false, err
 	}
+	var lastErr error
 	for _, e := range es {
 		if filepath.Ext(e.Name()) != ".sock" {
 			continue
 		}
-		conn, err := net.Dial("unix", filepath.Join(socketDir, e.Name()))
+		conn, err := net.DialTimeout("unix", filepath.Join(socketDir, e.Name()), time.Second)
 		if err != nil {
-			return false, err
+			lastErr = err
+			continue
 		}
+		conn.SetDeadline(time.Now().Add(2 * time.Second))
 		c := varlinkservice.Client{Client: varlink.NewClient(conn)}
-		defer c.Close()
-		if _, err := c.OpenLink(&varlinkservice.OpenLinkIn{Link: link}); err != nil {
-			return false, err
+		_, err = c.OpenLink(&varlinkservice.OpenLinkIn{Link: link})
+		c.Close()
+		if err != nil {
+			lastErr = err
+			continue
 		}
 		return true, nil
 	}
-	return false, nil
+	return false, lastErr
 }
 
 func listenVarlink(socketPath string, backend varlinkservice.Backend) error {

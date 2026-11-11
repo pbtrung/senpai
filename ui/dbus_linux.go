@@ -72,6 +72,9 @@ func (ui *UI) notify(target NotifyEvent, title, content string) int {
 }
 
 func notifyClose(id int) {
+	dbusLock.Lock()
+	delete(notifications, id)
+	dbusLock.Unlock()
 	conn, err := dbus.SessionBus()
 	if err != nil {
 		return
@@ -104,12 +107,12 @@ func DBusStart(callback func(any)) {
 	if err := conn.AddMatchSignal(
 		dbus.WithMatchObjectPath("/org/freedesktop/Notifications"),
 		dbus.WithMatchInterface("org.freedesktop.Notifications"),
-		dbus.WithMatchSender("org.freedesktop.Notifications.ActionInvoked"),
+		dbus.WithMatchSender("org.freedesktop.Notifications"),
 	); err != nil {
 		return
 	}
 	if err := conn.AddMatchSignal(
-		dbus.WithMatchObjectPath("/org/freedesktop/portal/desktop"),
+		dbus.WithMatchPathNamespace("/org/freedesktop/portal/desktop"),
 		dbus.WithMatchInterface("org.freedesktop.portal.Request"),
 		dbus.WithMatchMember("Response"),
 	); err != nil {
@@ -122,34 +125,56 @@ func DBusStart(callback func(any)) {
 	dbusLock.Unlock()
 	go func() {
 		for v := range c {
-			switch v.Name {
-			case "org.freedesktop.Notifications.NotificationClosed":
-				id := int(v.Body[0].(uint32))
-				dbusLock.Lock()
-				delete(notifications, id)
-				dbusLock.Unlock()
-			case "org.freedesktop.Notifications.ActionInvoked":
-				id := int(v.Body[0].(uint32))
-				dbusLock.Lock()
-				target, ok := notifications[id]
-				dbusLock.Unlock()
-				if ok {
-					callback(target)
-				}
-			case "org.freedesktop.portal.Request.Response":
-				status := v.Body[0].(uint32)
-				results := v.Body[1].(map[string]dbus.Variant)
-				if status == 0 /* success */ {
-					uri := results["uri"].Value().(string)
-					if u, err := url.Parse(uri); err == nil && u.Scheme == "file" {
-						callback(&ScreenshotEvent{
-							Path: u.Path,
-						})
-					}
-				}
-			}
+			handleDBusSignal(v, callback)
 		}
 	}()
+}
+
+func handleDBusSignal(v *dbus.Signal, callback func(any)) {
+	if v == nil || len(v.Body) < 1 {
+		return
+	}
+	switch v.Name {
+	case "org.freedesktop.Notifications.NotificationClosed":
+		id, ok := v.Body[0].(uint32)
+		if !ok {
+			return
+		}
+		dbusLock.Lock()
+		delete(notifications, int(id))
+		dbusLock.Unlock()
+	case "org.freedesktop.Notifications.ActionInvoked":
+		id, ok := v.Body[0].(uint32)
+		if !ok || len(v.Body) < 2 {
+			return
+		}
+		action, ok := v.Body[1].(string)
+		if !ok || action != "default" {
+			return
+		}
+		dbusLock.Lock()
+		target := notifications[int(id)]
+		dbusLock.Unlock()
+		if target != nil {
+			callback(target)
+		}
+	case "org.freedesktop.portal.Request.Response":
+		status, ok := v.Body[0].(uint32)
+		if !ok || status != 0 || len(v.Body) < 2 {
+			return
+		}
+		results, ok := v.Body[1].(map[string]dbus.Variant)
+		if !ok {
+			return
+		}
+		uri, ok := results["uri"].Value().(string)
+		if !ok {
+			return
+		}
+		if u, err := url.Parse(uri); err == nil && u.Scheme == "file" && (u.Host == "" || u.Host == "localhost") {
+			callback(&ScreenshotEvent{Path: u.Path})
+		}
+	}
 }
 
 func DBusStop() {

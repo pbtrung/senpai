@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -31,12 +32,25 @@ func copyContents(dstPath string, srcPath string) error {
 		return fmt.Errorf("open %q: %v", srcPath, err)
 	}
 	defer src.Close()
-	dst, err := os.Create(dstPath)
+	if err := os.MkdirAll(filepath.Dir(dstPath), 0700); err != nil {
+		return fmt.Errorf("create configuration directory: %w", err)
+	}
+	// Configuration files can contain passwords. Publish a complete private
+	// copy only after both writing and closing it have succeeded.
+	dst, err := os.CreateTemp(filepath.Dir(dstPath), ".senpai-config-*")
 	if err != nil {
 		return fmt.Errorf("create %q: %v", dstPath, err)
 	}
-	defer dst.Close()
-	if _, err := io.Copy(dst, src); err != nil {
+	defer os.Remove(dst.Name())
+	_, copyErr := io.Copy(dst, src)
+	closeErr := dst.Close()
+	if copyErr != nil {
+		return fmt.Errorf("copy %q to %q: %w", srcPath, dstPath, copyErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close %q: %w", dstPath, closeErr)
+	}
+	if err := os.Rename(dst.Name(), dstPath); err != nil {
 		return fmt.Errorf("copy %q to %q: %v", srcPath, dstPath, err)
 	}
 	return nil
