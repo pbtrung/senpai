@@ -961,6 +961,8 @@ func (app *App) handleAction(action string, args ...string) {
 		app.win.PreviousUnreadBuffer()
 		app.win.ScrollToBuffer()
 		app.spellCheck()
+	case "buffer-mark-all-read":
+		app.markAllRead()
 	case "cursor-right-word":
 		app.win.InputRightWord()
 	case "cursor-left-word":
@@ -1123,6 +1125,7 @@ var defaultCommands = map[string][]string{
 	"Control+j":       {"send"},
 	"KP_Enter":        {"send"},
 	"Alt+a":           {"buffer-next-unread"},
+	"Alt+h":           {"buffer-mark-all-read"},
 	"Alt+n":           {"scroll-next-highlight"},
 	"Alt+p":           {"scroll-previous-highlight"},
 	"Alt+1":           {"buffer", "0"},

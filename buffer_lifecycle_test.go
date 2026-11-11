@@ -141,3 +141,54 @@ func TestBufferEntryLifecycle(t *testing.T) {
 		t.Fatalf("could not close the current conversation while offline: %v", err)
 	}
 }
+
+func TestMarkAllReadSynchronizesAndPersists(t *testing.T) {
+	win, _, err := ui.New(ui.Config{
+		WithConsole:  bufferTestConsole{strings.NewReader("\x1b[?1;2c")},
+		NickColWidth: 10, TextMaxWidth: 80,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { win.Exit(); win.Close() })
+	win.AddBuffer("", "home", "")
+	win.AddBuffer("online", "online", "#c")
+	win.AddBuffer("offline", "offline", "bob")
+	out := make(chan irc.Message, 4096)
+	session := irc.NewSession(out, irc.SessionParams{Nickname: "me", Username: "me"})
+	t.Cleanup(session.Close)
+	ack, _ := irc.ParseMessage(":srv CAP me ACK :draft/read-marker")
+	if _, err := session.HandleMessage(ack); err != nil {
+		t.Fatal(err)
+	}
+	for len(out) > 0 {
+		<-out
+	}
+	stamp := time.Date(2026, 11, 9, 12, 0, 0, 0, time.UTC)
+	win.SetUnread("online", "#c", stamp, true, true)
+	win.SetUnread("offline", "bob", stamp, true, true)
+	app := &App{win: win, sessions: map[string]*irc.Session{"online": session}}
+	if got := defaultCommands["Alt+h"]; !reflect.DeepEqual(got, []string{"buffer-mark-all-read"}) {
+		t.Fatalf("missing Alt+h binding: %v", got)
+	}
+	app.handleAction("buffer-mark-all-read")
+	if len(out) != 1 {
+		t.Fatalf("expected one online read marker, got %d", len(out))
+	}
+	msg := <-out
+	if msg.Command != "MARKREAD" || msg.Params[0] != "#c" {
+		t.Fatalf("wrong server marker: %#v", msg)
+	}
+	for _, net := range []string{"online", "offline"} {
+		target := "#c"
+		if net == "offline" {
+			target = "bob"
+		}
+		if got := app.bufferStore.get(net, target).Read; !got.Equal(stamp) {
+			t.Fatalf("%s marker not persisted: %v", net, got)
+		}
+		if got := win.ReadMarker(net, target); !got.Equal(stamp) {
+			t.Fatalf("%s UI marker not advanced: %v", net, got)
+		}
+	}
+}

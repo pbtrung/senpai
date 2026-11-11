@@ -149,6 +149,9 @@ These shortcuts can be customized in the configuration, see senpai(5).
 *SHIFT-LEFT*
 	Go to the previous unread buffer.
 
+*ALT-H*
+	Mark all buffers as read, including muted conversations and unloaded history.
+
 *ALT-HOME*
 	Go to the first buffer.
 

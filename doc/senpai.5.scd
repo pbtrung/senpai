@@ -226,6 +226,8 @@ shortcuts {
 :  go to the next unread buffer
 |  buffer-previous-unread
 :  go to the previous unread buffer
+|  buffer-mark-all-read
+:  mark all buffers as read (default: Alt+h)
 |  cursor-right-word
 :  move the cursor to the next word
 |  cursor-left-word

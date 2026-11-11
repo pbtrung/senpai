@@ -91,3 +91,72 @@ func TestHistoryDoesNotDoubleCountHighlights(t *testing.T) {
 		t.Fatalf("partial read retained old highlights: %d", got)
 	}
 }
+
+func TestMarkAllRead(t *testing.T) {
+	stamp := time.Date(2026, 11, 9, 12, 0, 0, 0, time.UTC)
+	bs := BufferList{ui: &UI{}, focused: true, list: []buffer{
+		{title: "", unread: true, highlights: 1},
+		{netID: "1", title: "#loaded", unread: true, lines: []Line{
+			{At: stamp, Readable: true, Notify: NotifyHighlight},
+			{At: stamp.Add(time.Hour)}, // Local status output must not advance a marker.
+		}},
+		{netID: "2", title: "bob", muted: true},
+		{netID: "3", title: "#empty", read: stamp.Add(time.Minute)},
+	}}
+	bs.SetUnread("2", "bob", stamp.Add(time.Second), true, true)
+	bs.To(2) // Selecting unloaded history must preserve the timestamp for Alt+H.
+	bs.OpenOverlay()
+	bs.overlay.lines = []Line{{At: stamp.Add(2 * time.Hour), Readable: true}}
+	got := bs.MarkAllRead()
+	want := []ReadMarker{{"1", "#loaded", stamp}, {"2", "bob", stamp.Add(time.Second)}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("markers: got %#v, want %#v", got, want)
+	}
+	if !bs.HasOverlay() || !bs.overlay.read.IsZero() {
+		t.Fatal("mark-all-read changed search overlay")
+	}
+	if !bs.list[3].read.Equal(stamp.Add(time.Minute)) {
+		t.Fatal("read marker moved backwards")
+	}
+	for _, b := range bs.list {
+		if b.unread || b.highlights != 0 || !b.unreadLatest.IsZero() || b.snapshotMention {
+			t.Fatalf("unread state remains in %s/%s", b.netID, b.title)
+		}
+	}
+	if got := bs.MarkAllRead(); len(got) != 0 {
+		t.Fatalf("repeated action resent markers: %#v", got)
+	}
+	bs.SetUnread("2", "bob", stamp.Add(time.Second), true, true)
+	if bs.list[2].unread {
+		t.Fatal("stale snapshot undid mark-all-read")
+	}
+	bs.CloseOverlay()
+	bs.To(0)
+	bs.SetUnread("2", "bob", stamp.Add(2*time.Second), true, true)
+	if !bs.list[2].unread {
+		t.Fatal("newer message was suppressed")
+	}
+}
+
+func TestUpdateReadIgnoresStatusOnlyLines(t *testing.T) {
+	bs := BufferList{ui: &UI{}, list: []buffer{{title: "#c", lines: []Line{
+		{At: time.Now(), Body: PlainString("local status")},
+	}}}}
+	if _, _, at := bs.UpdateRead(); !at.IsZero() {
+		t.Fatal("local status advanced a read marker")
+	}
+}
+
+func TestPartialReadPreservesUnloadedSnapshot(t *testing.T) {
+	stamp := time.Date(2026, 11, 9, 12, 0, 0, 0, time.UTC)
+	bs := BufferList{list: []buffer{{title: "#c"}}, focused: true}
+	bs.SetUnread("", "#c", stamp.Add(time.Hour), true, true)
+	bs.SetRead("", "#c", stamp)
+	if !bs.list[0].unreadLatest.Equal(stamp.Add(time.Hour)) {
+		t.Fatal("partial read discarded unloaded unread snapshot")
+	}
+	markers := bs.MarkAllRead()
+	if len(markers) != 1 || !markers[0].Timestamp.Equal(stamp.Add(time.Hour)) {
+		t.Fatalf("missing snapshot read progress: %#v", markers)
+	}
+}

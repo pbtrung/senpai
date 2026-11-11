@@ -618,6 +618,10 @@ func (ui *UI) UpdateRead() (netID, buffer string, timestamp time.Time) {
 	return ui.bs.UpdateRead()
 }
 
+func (ui *UI) MarkAllRead() []ReadMarker {
+	return ui.bs.MarkAllRead()
+}
+
 func (ui *UI) SetStatus(status string) {
 	ui.status = status
 }

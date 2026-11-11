@@ -697,8 +697,8 @@ func (bs *BufferList) clearRead(i int) {
 	b := &bs.list[i]
 	b.highlights = 0
 	b.unread = false
-	b.unreadLatest = time.Time{}
-	b.snapshotMention = false
+	// Keep the snapshot until a read marker covers it. Merely selecting a
+	// buffer does not mean its unloaded history has been read.
 	if len(b.notifications) > 0 {
 		for _, id := range b.notifications {
 			notifyClose(id)
@@ -780,8 +780,8 @@ func (bs *BufferList) UpdateRead() (netID, title string, timestamp time.Time) {
 	b := bs.cur()
 	var l *Line
 	bs.forEachLine(b, func(line *Line, y int) bool {
-		l = line
 		if y >= b.scrollAmt && line.Readable {
+			l = line
 			return true
 		}
 		return false
@@ -791,6 +791,42 @@ func (bs *BufferList) UpdateRead() (netID, title string, timestamp time.Time) {
 		return b.netID, b.title, b.read
 	}
 	return "", "", time.Time{}
+}
+
+// ReadMarker identifies a conversation's read progress for server synchronization.
+type ReadMarker struct {
+	NetID     string
+	Buffer    string
+	Timestamp time.Time
+}
+
+// MarkAllRead clears every real buffer, including muted and unloaded ones.
+// It uses known message times rather than the wall clock, so clock skew cannot
+// mark messages which have not arrived yet as read. Search overlays are excluded.
+func (bs *BufferList) MarkAllRead() []ReadMarker {
+	var markers []ReadMarker
+	for i := range bs.list {
+		b := &bs.list[i]
+		latest := b.read
+		if b.unreadLatest.After(latest) {
+			latest = b.unreadLatest
+		}
+		for _, line := range b.lines {
+			if line.Readable && line.At.After(latest) {
+				latest = line.At
+			}
+		}
+		if b.title != "" && latest.After(b.read) {
+			markers = append(markers, ReadMarker{b.netID, b.title, latest})
+		}
+		b.read = latest
+		b.unreadLatest = time.Time{}
+		b.snapshotMention = false
+		b.unreadRuler = latest
+		b.unreadSkip = optionalTrue
+		bs.clearRead(i)
+	}
+	return markers
 }
 
 func (bs *BufferList) Buffer(i int) (netID, title string, ok bool) {

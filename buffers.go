@@ -185,3 +185,14 @@ func (app *App) targetClosed(network, name string, latest time.Time) bool {
 	state := app.bufferStore.get(network, name)
 	return !state.ClosedAt.IsZero() && !latest.After(state.ClosedAt)
 }
+
+func (app *App) markAllRead() {
+	for _, marker := range app.win.MarkAllRead() {
+		if session := app.sessions[marker.NetID]; session != nil {
+			session.ReadSet(marker.Buffer, marker.Timestamp)
+		}
+		state := app.bufferStore.get(marker.NetID, marker.Buffer)
+		state.Network, state.Name, state.Read = marker.NetID, marker.Buffer, marker.Timestamp
+		app.bufferStore.put(state)
+	}
+}
