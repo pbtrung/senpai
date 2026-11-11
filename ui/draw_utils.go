@@ -176,8 +176,20 @@ func printString(vx *Vaxis, x *int, y int, s StyledString) {
 	}
 }
 
+func identText(vx *Vaxis, text string, width int) (string, rune) {
+	if stringWidth(vx, text) > width {
+		return truncate(vx, text, max(0, width), ""), '+'
+	}
+	return text, ' '
+}
+
 func printIdent(vx *Vaxis, x, y, width int, s StyledString) (xb int, xe int) {
-	s.string = truncate(vx, s.string, width, "\u2026")
+	if width <= 0 {
+		return x, x
+	}
+	markerX := x + width
+	var marker rune
+	s.string, marker = identText(vx, s.string, width)
 	x += width - stringWidth(vx, s.string)
 	var st vaxis.Style
 	if len(s.styles) != 0 && s.styles[0].Start == 0 {
@@ -186,13 +198,19 @@ func printIdent(vx *Vaxis, x, y, width int, s StyledString) (xb int, xe int) {
 	setCell(vx, x-1, y, ' ', st)
 	xb = x
 	printString(vx, &x, y, s)
-	if len(s.styles) != 0 {
-		// TODO check if it's not a style that is from the truncated
-		// part of s.
-		st = s.styles[len(s.styles)-1].Style
+	for _, span := range s.styles {
+		if span.Start >= len(s.string) {
+			break
+		}
+		st = span.Style
 	}
-	setCell(vx, x, y, ' ', st)
+	// The first separator cell carries the truncation marker, leaving the
+	// whole nickname column available for text and one space before the body.
+	setCell(vx, markerX, y, marker, st)
 	xe = x
+	if marker == '+' {
+		xe = markerX + 1
+	}
 	return
 }
 
