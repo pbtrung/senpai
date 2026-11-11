@@ -286,3 +286,48 @@ func TestInvalidLinkHopCount(t *testing.T) {
 		}
 	}
 }
+
+func TestMalformedBatchIdentifiers(t *testing.T) {
+	s, _ := testSession(t)
+	for _, id := range []string{"", "+", "-", "unprefixed"} {
+		if _, err := s.HandleMessage(NewMessage("BATCH", id, "draft/chathistory-targets")); err == nil {
+			t.Errorf("accepted invalid batch ID %q", id)
+		}
+	}
+	if ev := handleLine(t, s, "@batch= :server CHATHISTORY TARGETS #c 2026-11-09T12:00:00.000Z"); ev != nil {
+		t.Fatalf("unopened empty batch emitted event: %#v", ev)
+	}
+}
+
+func TestNamesIgnoresPrefixOnlyMembers(t *testing.T) {
+	s, _ := testSession(t)
+	handleLine(t, s, ":alice!u@h JOIN #c")
+	handleLine(t, s, ":server 353 alice = #c :@ + @+ bob")
+	if got := s.Names("#c"); len(got) != 1 || got[0].Name.Name != "bob" {
+		t.Fatalf("malformed members were retained: %#v", got)
+	}
+}
+
+func FuzzSessionMessage(f *testing.F) {
+	for _, seed := range []string{
+		"PING token", ":server 001 alice :welcome", ":server 005 alice PREFIX=(ov)@+ :supported",
+		"@batch= :server CHATHISTORY TARGETS #c 2026-11-09T12:00:00.000Z",
+		":server BATCH +", ":bob PRIVMSG alice :hello", ":server 372", ":bob MODE #c +o bob",
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, raw string) {
+		if len(raw) > 8192 {
+			t.Skip()
+		}
+		msg, err := ParseMessage(raw)
+		if err != nil {
+			return
+		}
+		out := make(chan Message, 4096)
+		s := newSession(out, SessionParams{Nickname: "alice", Username: "alice"})
+		s.registered = true
+		defer s.Close()
+		_, _ = s.HandleMessage(msg)
+	})
+}

@@ -38,3 +38,48 @@ func TestMultiplexLabels(t *testing.T) {
 		}
 	}
 }
+
+func TestWriteFailureUnblocksQueuedSenders(t *testing.T) {
+	client, server := net.Pipe()
+	in, out := ChanInOut(client)
+	server.Close()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer close(out)
+		for i := 0; i < 4*chanCapacity; i++ {
+			out <- NewMessage("PING", "queued")
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("write failure stranded output producers")
+	}
+	select {
+	case _, ok := <-in:
+		if ok {
+			t.Fatal("unexpected incoming message")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("failed connection kept input open")
+	}
+}
+
+func TestTransportAcceptsLargeTaggedLines(t *testing.T) {
+	client, server := net.Pipe()
+	defer server.Close()
+	in, out := ChanInOut(client)
+	defer close(out)
+	text := strings.Repeat("x", 65500)
+	line := "@tag=" + strings.Repeat("y", 1024) + " :bob PRIVMSG #c :" + text + "\r\n"
+	go func() { server.Write([]byte(line)) }()
+	select {
+	case msg, ok := <-in:
+		if !ok || len(msg.Params) != 2 || msg.Params[1] != text {
+			t.Fatal("large tagged line was dropped")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("large tagged line was not delivered")
+	}
+}

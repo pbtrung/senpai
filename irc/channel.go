@@ -25,9 +25,13 @@ func ChanInOut(conn net.Conn) (in <-chan Message, out chan<- Message) {
 	const maxRTT = 10 * time.Second
 	var last atomic.Value
 	last.Store(time.Now())
+	// A peer which never sends its first line must time out as well.
+	conn.SetReadDeadline(time.Now().Add(keepAlive + maxRTT))
 
 	go func() {
 		r := bufio.NewScanner(conn)
+		// Account for negotiated 64 KiB lines plus IRCv3 message tags.
+		r.Buffer(make([]byte, 4096), 128*1024)
 		for r.Scan() {
 			line := r.Text()
 			line = strings.ToValidUTF8(line, string([]rune{unicode.ReplacementChar}))
@@ -46,6 +50,14 @@ func ChanInOut(conn net.Conn) (in <-chan Message, out chan<- Message) {
 	}()
 
 	go func() {
+		defer func() {
+			conn.Close()
+			// Unblock senders until the owner observes the closed input and
+			// closes output. Otherwise a write error can strand the event loop
+			// on a full output queue before it can process the disconnect.
+			for range out_ {
+			}
+		}()
 		t := time.NewTicker(time.Second)
 		defer t.Stop()
 		labelOff := 1
@@ -79,6 +91,7 @@ func ChanInOut(conn net.Conn) (in <-chan Message, out chan<- Message) {
 
 				last.Store(time.Now())
 				// TODO send messages by batches
+				conn.SetWriteDeadline(time.Now().Add(maxRTT))
 				_, err := fmt.Fprintf(conn, "%s\r\n", msg.String())
 				if err != nil {
 					break outer
@@ -94,13 +107,13 @@ func ChanInOut(conn net.Conn) (in <-chan Message, out chan<- Message) {
 					continue
 				}
 				last.Store(now)
+				conn.SetWriteDeadline(now.Add(maxRTT))
 				_, err := fmt.Fprint(conn, "PING _\r\n")
 				if err != nil {
 					break outer
 				}
 			}
 		}
-		_ = conn.Close()
 	}()
 
 	return in_, out_

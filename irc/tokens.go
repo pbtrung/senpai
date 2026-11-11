@@ -519,6 +519,9 @@ func ParseNameReply(trailing string, prefixes string) (names []Member) {
 		}
 
 		name := strings.TrimLeft(word, prefixes)
+		if name == "" {
+			continue
+		}
 		names = append(names, Member{
 			PowerLevel: word[:len(word)-len(name)],
 			Name:       ParsePrefix(name),

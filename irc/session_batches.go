@@ -12,7 +12,7 @@ func (s *Session) handleRegistered(msg Message) (Event, error) {
 		}
 		return s.handleRegistered(*assembled)
 	}
-	if id, ok := msg.Tags["batch"]; ok {
+	if id, ok := msg.Tags["batch"]; ok && id != "" {
 		if id == s.targetsBatchID {
 			var target, timestamp string
 			if err := msg.ParseParams(nil, &target, &timestamp); err != nil {
@@ -70,8 +70,8 @@ func (s *Session) handleBatchMessage(msg Message) (Event, error) {
 		if err := msg.ParseParams(&id); err != nil {
 			return nil, err
 		}
-		if len(id) == 0 {
-			return nil, fmt.Errorf("empty batch id")
+		if len(id) < 2 || (id[0] != '+' && id[0] != '-') {
+			return nil, fmt.Errorf("invalid batch id: %q", id)
 		}
 
 		batchStart := id[0] == '+'
