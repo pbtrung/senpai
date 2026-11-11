@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"git.sr.ht/~delthas/senpai/ui"
+	"go.rockorager.dev/vaxis"
 )
 
 func (app *App) initWindow() {
@@ -112,4 +113,47 @@ func (app *App) clearBufferCommand() {
 		return
 	}
 	app.win.InputClear()
+}
+
+// updatePrompt changes the prompt text according to the application context.
+func (app *App) updatePrompt() {
+	netID, buffer := app.win.CurrentBuffer()
+	s := app.sessions[netID]
+	command := isCommand(app.win.InputContent())
+	var prompt ui.StyledString
+	if buffer == "" || command {
+		prompt = ui.Styled(">", vaxis.Style{
+			Foreground: app.cfg.Colors.Prompt,
+		})
+	} else if s == nil {
+		prompt = ui.Styled("<offline>", vaxis.Style{
+			Foreground: ui.ColorRed,
+		})
+	} else {
+		prompt = app.win.IdentString(app.cfg.Colors.Nicks, s.Nick(), true)
+	}
+	app.win.SetPrompt(prompt)
+}
+
+func (app *App) printTopic(netID, buffer string) (ok bool) {
+	var body string
+	s := app.sessions[netID]
+	if s == nil {
+		return false
+	}
+	topic, who, at := s.Topic(buffer)
+	topic = ui.IRCString(topic).String()
+	if who == nil {
+		body = fmt.Sprintf("Topic: %s", topic)
+	} else {
+		body = fmt.Sprintf("Topic (set by %s on %s): %s", who.Name, at.Local().Format("January 2 2006 at 15:04:05"), topic)
+	}
+	app.win.AddLine(netID, buffer, ui.Line{
+		At:   time.Now(),
+		Head: ui.ColorString("--", app.cfg.Colors.Status),
+		Body: ui.Styled(body, vaxis.Style{
+			Foreground: app.cfg.Colors.Status,
+		}),
+	})
+	return true
 }

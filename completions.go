@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"git.sr.ht/~delthas/senpai/irc"
 	"git.sr.ht/~delthas/senpai/ui"
@@ -349,4 +350,50 @@ func equal(a, b []rune) bool {
 		}
 	}
 	return true
+}
+
+type pendingCompletion struct {
+	id       int
+	f        completionAsync
+	deadline time.Time
+}
+
+// completions computes the list of completions given the input text and the
+// cursor position.
+func (app *App) completions(cursorIdx int, text []rune) []ui.Completion {
+	if len(text) == 0 {
+		return nil
+	}
+	netID, buffer := app.win.CurrentBuffer()
+	s := app.sessions[netID]
+	if s == nil {
+		return nil
+	}
+
+	var cs []ui.Completion
+	if buffer != "" {
+		cs = app.completionsChannelTopic(cs, cursorIdx, text)
+		cs = app.completionsChannelMembers(cs, cursorIdx, text)
+	}
+	cs = app.completionsJoin(cs, cursorIdx, text)
+	cs = app.completionsUpload(cs, cursorIdx, text)
+	cs = app.completionsMsg(cs, cursorIdx, text)
+	cs = app.completionsCommands(cs, cursorIdx, text)
+	cs = app.completionsEmoji(cs, cursorIdx, text)
+
+	for i := 0; i < len(cs); i++ {
+		c := &cs[i]
+		if c.Async == nil {
+			continue
+		}
+		c.AsyncID = app.pendingCompletionsOff
+		app.pendingCompletionsOff++
+		app.pendingCompletions[netID] = append(app.pendingCompletions[netID], pendingCompletion{
+			id:       c.AsyncID,
+			f:        c.Async.(completionAsync),
+			deadline: time.Now().Add(4 * time.Second),
+		})
+	}
+
+	return cs
 }

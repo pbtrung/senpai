@@ -196,3 +196,33 @@ func (app *App) markAllRead() {
 		app.bufferStore.put(state)
 	}
 }
+
+func (app *App) addUserBuffer(netID, buffer string, t time.Time) (i int, added bool) {
+	i, added = app.win.AddBuffer(netID, "", buffer)
+	if !added {
+		return
+	}
+	s := app.sessions[netID]
+	if s == nil {
+		return
+	}
+	i = app.win.SetMuted(netID, buffer, s.MutedGet(buffer))
+	i = app.win.SetPinned(netID, buffer, s.PinnedGet(buffer))
+	app.openBuffer(netID, buffer)
+	app.monitor[netID][buffer] = struct{}{}
+	s.MonitorAdd(buffer)
+	s.ReadGet(buffer)
+	if s.HasCapability("soju.im/unread") {
+		return
+	}
+	if !t.IsZero() {
+		s.NewHistoryRequest(buffer).
+			WithLimit(500).
+			Before(t)
+	} else {
+		s.NewHistoryRequest(buffer).
+			WithLimit(500).
+			Latest()
+	}
+	return
+}

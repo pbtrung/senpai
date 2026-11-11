@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode/utf8"
+
+	"go.rockorager.dev/vaxis"
 )
 
 const (
@@ -162,4 +165,56 @@ func (s *Session) sendText(command, target, text string, lineLen int) {
 		s.send(NewMessage("BATCH", "-"+id))
 		fragments = fragments[n:]
 	}
+}
+
+func splitChunks(s string, chunkLen int) (chunks []string) {
+	if chunkLen <= 0 || len(s) <= chunkLen {
+		return []string{s}
+	}
+
+	b := 0
+	n := 0
+	it := vaxis.NewCharacterIterator(s)
+	for {
+		c, ok := it.Next()
+		if !ok {
+			break
+		}
+		cw := len(c.Grapheme)
+		if cw > chunkLen {
+			if n > 0 {
+				chunks = append(chunks, s[b:b+n])
+				b += n
+				n = 0
+			}
+			// A single grapheme can contain arbitrarily many combining marks.
+			// Fall back to code point boundaries so it cannot exceed IRC LINELEN.
+			for cw > 0 {
+				size := min(chunkLen, cw)
+				if size < cw {
+					for size > 0 && !utf8.RuneStart(s[b+size]) {
+						size--
+					}
+				}
+				if size == 0 {
+					_, size = utf8.DecodeRuneInString(s[b:])
+				}
+				chunks = append(chunks, s[b:b+size])
+				b += size
+				cw -= size
+			}
+			continue
+		}
+		if n+cw > chunkLen {
+			chunks = append(chunks, s[b:b+n])
+			b += n
+			n = cw
+			continue
+		}
+		n += cw
+	}
+	if b < len(s) {
+		chunks = append(chunks, s[b:])
+	}
+	return
 }
