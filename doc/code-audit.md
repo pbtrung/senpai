@@ -109,7 +109,7 @@ Passed:
 - `go build ./...` on Linux
 - `GOOS=darwin GOARCH=arm64 go build ./...`
 - `GOOS=windows GOARCH=amd64 go build ./...`
-- `go test ./irc -run '^$' -fuzz '^FuzzSessionMessage$' -fuzztime=20s -parallel=2`
+- `go test ./src/irc -run '^$' -fuzz '^FuzzSessionMessage$' -fuzztime=20s -parallel=2`
   — 651,569 executions without a crash; this target handles one parsed message
   per fresh session and does not explore arbitrary multi-message state sequences.
 - `gofmt -l .` and `git diff --check` — clean.

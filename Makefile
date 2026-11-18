@@ -21,7 +21,7 @@ endif
 all: senpai doc
 
 senpai:
-	$(GO) build $(GOFLAGS) -ldflags "-s -w -X git.sr.ht/~delthas/senpai.version=$(VERSION)" ./cmd/senpai
+	$(GO) build $(GOFLAGS) -ldflags "-s -w -X git.sr.ht/~delthas/senpai/src.version=$(VERSION)" ./src/cmd/senpai
 
 ifeq (, $(shell which $(SCDOC) 2>/dev/null))
 $(warning "$(SCDOC) not found, skipping building documentation")
@@ -64,6 +64,6 @@ uninstall:
 	$(RM) $(DESTDIR)$(PREFIX)/$(ICONDIR)/hicolor/scalable/apps/senpai.svg
 
 emoji:
-	curl -sSfL -o emoji.json "https://raw.githubusercontent.com/delthas/gemoji-json/master/emoji.json"
+	curl -sSfL -o src/emoji.json "https://raw.githubusercontent.com/delthas/gemoji-json/master/emoji.json"
 
 .PHONY: all senpai doc res clean install uninstall emoji
